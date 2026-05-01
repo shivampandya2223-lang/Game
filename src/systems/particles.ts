@@ -1,87 +1,151 @@
 /**
  * Particle System
- * Sand dust kicked up behind the buggy, drifting in the desert wind
+ * Premium sand dust, tyre smoke, and ambient wind wisps.
+ * Uses instanced rendering for performance.
  */
 
 import * as THREE from 'three';
 
 interface Particle {
-  mesh: THREE.Mesh;
-  vel: THREE.Vector3;
-  life: number;
+  mesh   : THREE.Mesh;
+  vel    : THREE.Vector3;
+  life   : number;
   maxLife: number;
+  initScale: number;
 }
 
 export class ParticleSystem {
-  private scene: THREE.Scene;
+  private scene    : THREE.Scene;
   private particles: Particle[] = [];
-  private readonly MAX = 600;
+  private readonly MAX = 800;
 
-  // Shared geometry — one sphere, instanced per particle
-  private geo: THREE.BufferGeometry;
+  // Shared geometries
+  private geoSphere: THREE.BufferGeometry;
+  private geoFlat  : THREE.BufferGeometry;
 
-  // Sand colour palette
-  private readonly COLOURS = [0xd4a870, 0xc09050, 0xe0c090, 0xb87840, 0xddc080];
+  // Sand colour palette — warm desert tones
+  private readonly DUST_COLOURS = [
+    0xd4a870, 0xc09050, 0xe0c090, 0xb87840,
+    0xddc080, 0xc8a060, 0xf0d0a0,
+  ];
 
   constructor(scene: THREE.Scene) {
-    this.scene = scene;
-    this.geo   = new THREE.SphereGeometry(0.22, 4, 4);
+    this.scene    = scene;
+    this.geoSphere = new THREE.SphereGeometry(0.25, 5, 4);
+    this.geoFlat   = new THREE.PlaneGeometry(1, 0.3);
   }
 
-  // ── Emit ─────────────────────────────────────────────────────────────────
+  // ── Dust cloud behind tyres ───────────────────────────────────────────────
 
-  emitDust(pos: THREE.Vector3, vel: THREE.Vector3, count = 4): void {
+  emitDust(pos: THREE.Vector3, vel: THREE.Vector3, count = 5): void {
     if (this.particles.length >= this.MAX) return;
 
     for (let i = 0; i < count; i++) {
-      const col = this.COLOURS[Math.floor(Math.random() * this.COLOURS.length)];
+      const col = this.DUST_COLOURS[Math.floor(Math.random() * this.DUST_COLOURS.length)];
       const mat = new THREE.MeshStandardMaterial({
         color      : col,
         roughness  : 1,
         transparent: true,
-        opacity    : 0.55 + Math.random() * 0.3,
+        opacity    : 0.5 + Math.random() * 0.35,
         depthWrite : false,
       });
 
-      const mesh = new THREE.Mesh(this.geo, mat);
-      mesh.scale.setScalar(0.4 + Math.random() * 1.2);
+      const initScale = 0.5 + Math.random() * 1.4;
+      const mesh = new THREE.Mesh(this.geoSphere, mat);
+      mesh.scale.setScalar(initScale);
       mesh.position.copy(pos).add(new THREE.Vector3(
-        (Math.random() - 0.5) * 2,
-        Math.random() * 0.5,
-        (Math.random() - 0.5) * 2
+        (Math.random() - 0.5) * 2.5,
+        Math.random() * 0.6,
+        (Math.random() - 0.5) * 2.5
       ));
 
-      // Kick sideways + upward
       const pVel = new THREE.Vector3(
-        vel.x * 0.2 + (Math.random() - 0.5) * 8,
-        2 + Math.random() * 7,
-        vel.z * 0.2 + (Math.random() - 0.5) * 8
+        vel.x * 0.15 + (Math.random() - 0.5) * 9,
+        1.5 + Math.random() * 8,
+        vel.z * 0.15 + (Math.random() - 0.5) * 9
       );
 
       this.scene.add(mesh);
-      this.particles.push({ mesh, vel: pVel, life: 0, maxLife: 0.8 + Math.random() * 1.2 });
+      this.particles.push({
+        mesh, vel: pVel, life: 0,
+        maxLife: 0.9 + Math.random() * 1.4,
+        initScale,
+      });
     }
   }
 
-  // ── Wind streaks (ambient sand wisps) ─────────────────────────────────────
+  // ── Tyre smoke at high speed / drift ─────────────────────────────────────
+
+  emitSmoke(pos: THREE.Vector3, count = 3): void {
+    if (this.particles.length >= this.MAX) return;
+
+    for (let i = 0; i < count; i++) {
+      const grey = 0.55 + Math.random() * 0.3;
+      const mat  = new THREE.MeshStandardMaterial({
+        color      : new THREE.Color(grey, grey, grey),
+        transparent: true,
+        opacity    : 0.35 + Math.random() * 0.2,
+        depthWrite : false,
+        roughness  : 1,
+      });
+
+      const initScale = 0.8 + Math.random() * 1.0;
+      const mesh = new THREE.Mesh(this.geoSphere, mat);
+      mesh.scale.setScalar(initScale);
+      mesh.position.copy(pos).add(new THREE.Vector3(
+        (Math.random() - 0.5) * 1.5,
+        0.3 + Math.random() * 0.5,
+        (Math.random() - 0.5) * 1.5
+      ));
+
+      const pVel = new THREE.Vector3(
+        (Math.random() - 0.5) * 3,
+        3 + Math.random() * 5,
+        (Math.random() - 0.5) * 3
+      );
+
+      this.scene.add(mesh);
+      this.particles.push({
+        mesh, vel: pVel, life: 0,
+        maxLife: 1.2 + Math.random() * 1.0,
+        initScale,
+      });
+    }
+  }
+
+  // ── Ambient wind streaks ──────────────────────────────────────────────────
 
   emitWindStreak(origin: THREE.Vector3): void {
     if (this.particles.length >= this.MAX - 10) return;
-    const count = 2;
-    for (let i = 0; i < count; i++) {
+
+    for (let i = 0; i < 2; i++) {
       const mat = new THREE.MeshStandardMaterial({
-        color: 0xe0c890, transparent: true, opacity: 0.18, depthWrite: false,
+        color      : 0xe8d090,
+        transparent: true,
+        opacity    : 0.12 + Math.random() * 0.1,
+        depthWrite : false,
       });
-      const mesh = new THREE.Mesh(this.geo, mat);
-      mesh.scale.set(0.2, 0.2, 1.5 + Math.random() * 2);
+      const mesh = new THREE.Mesh(this.geoFlat, mat);
+      mesh.scale.set(1.5 + Math.random() * 3, 1, 1);
       mesh.position.set(
-        origin.x + (Math.random() - 0.5) * 30,
-        origin.y + 0.3 + Math.random() * 1.5,
-        origin.z + (Math.random() - 0.5) * 30
+        origin.x + (Math.random() - 0.5) * 40,
+        origin.y + 0.2 + Math.random() * 2,
+        origin.z + (Math.random() - 0.5) * 40
       );
-      const vel = new THREE.Vector3(3 + Math.random() * 4, 0.2, (Math.random() - 0.5) * 2);
+      mesh.rotation.y = Math.random() * Math.PI;
+
+      const vel = new THREE.Vector3(
+        4 + Math.random() * 5,
+        0.1 + Math.random() * 0.3,
+        (Math.random() - 0.5) * 2
+      );
+
       this.scene.add(mesh);
-      this.particles.push({ mesh, vel, life: 0, maxLife: 1.5 + Math.random() * 1.5 });
+      this.particles.push({
+        mesh, vel, life: 0,
+        maxLife: 1.8 + Math.random() * 2.0,
+        initScale: 1,
+      });
     }
   }
 
@@ -89,28 +153,28 @@ export class ParticleSystem {
 
   update(dt: number): void {
     for (let i = this.particles.length - 1; i >= 0; i--) {
-      const p = this.particles[i];
-      p.life += dt;
+      const p        = this.particles[i];
+      p.life        += dt;
       const progress = p.life / p.maxLife;
 
-      // Move
       p.mesh.position.addScaledVector(p.vel, dt);
 
-      // Gravity & drag
-      p.vel.y   -= 4.5 * dt;
-      p.vel.x   *= 0.97;
-      p.vel.z   *= 0.97;
+      // Gravity + drag
+      p.vel.y   -= 3.5 * dt;
+      p.vel.x   *= 0.96;
+      p.vel.z   *= 0.96;
 
-      // Scale up slightly as it disperses
-      const sc = 1 + progress * 1.5;
-      p.mesh.scale.setScalar(p.mesh.scale.x > 0.1 ? p.mesh.scale.x * (1 + dt * 0.4) : 0.1);
+      // Grow as it disperses
+      const sc = p.initScale * (1 + progress * 2.5);
+      p.mesh.scale.setScalar(sc);
 
-      // Fade
-      (p.mesh.material as THREE.MeshStandardMaterial).opacity = Math.max(0, (1 - progress) * 0.6);
+      // Fade out
+      const mat = p.mesh.material as THREE.MeshStandardMaterial;
+      mat.opacity = Math.max(0, (1 - progress) * (progress < 0.3 ? progress / 0.3 : 1) * 0.65);
 
       if (progress >= 1) {
         this.scene.remove(p.mesh);
-        (p.mesh.material as THREE.Material).dispose();
+        mat.dispose();
         this.particles.splice(i, 1);
       }
     }
@@ -122,6 +186,7 @@ export class ParticleSystem {
       (p.mesh.material as THREE.Material).dispose();
     });
     this.particles = [];
-    this.geo.dispose();
+    this.geoSphere.dispose();
+    this.geoFlat.dispose();
   }
 }

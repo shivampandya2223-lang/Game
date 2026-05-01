@@ -1,6 +1,7 @@
 /**
  * Camera System
- * Smooth third-person follow with speed-based zoom and slight lag
+ * Cinematic third-person follow — always behind the buggy, speed-based zoom,
+ * subtle shake, and smooth look-ahead.
  */
 
 import * as THREE from 'three';
@@ -8,20 +9,23 @@ import * as THREE from 'three';
 export class CameraSystem {
   private camera: THREE.PerspectiveCamera;
 
-  // Current smoothed values
   private pos    = new THREE.Vector3(0, 15, 30);
   private lookAt = new THREE.Vector3();
 
+  // Shake
+  private shakeIntensity = 0;
+  private shakeOffset    = new THREE.Vector3();
+
   // Settings
-  private readonly BASE_DIST  = 20;
-  private readonly HEIGHT     = 9;
-  private readonly SMOOTHNESS = 0.06;  // lower = more lag / cinematic
+  private readonly BASE_DIST  = 18;
+  private readonly HEIGHT     = 8;
+  private readonly SMOOTHNESS = 0.07;
 
   constructor(camera: THREE.PerspectiveCamera) {
     this.camera = camera;
-    camera.fov  = 65;
+    camera.fov  = 68;
     camera.near = 0.3;
-    camera.far  = 1800;
+    camera.far  = 2000;
     camera.updateProjectionMatrix();
     window.addEventListener('resize', () => this.onResize());
   }
@@ -32,34 +36,43 @@ export class CameraSystem {
   }
 
   update(carPos: THREE.Vector3, carYaw: number, speedKmh: number): void {
-    // Dynamic distance — zoom out slightly at high speed
-    const speedFactor = Math.min(speedKmh / 150, 1);
-    const dist = this.BASE_DIST + speedFactor * 12;
+    const speedFactor = Math.min(speedKmh / 160, 1);
+    const dist   = this.BASE_DIST + speedFactor * 10;
+    const height = this.HEIGHT   + speedFactor * 2;
 
-    // Target position: directly behind the car, elevated
+    // ── Car forward direction: (sinY, 0, cosY) ────────────────────────────
+    // Camera must go in the OPPOSITE direction (behind the car).
     const sinY = Math.sin(carYaw);
     const cosY = Math.cos(carYaw);
+
     const target = new THREE.Vector3(
-      carPos.x + sinY * dist,
-      carPos.y + this.HEIGHT + speedFactor * 3,
-      carPos.z + cosY * dist
+      carPos.x - sinY * dist,   // BEHIND: negate forward
+      carPos.y + height,
+      carPos.z - cosY * dist    // BEHIND: negate forward
     );
 
-    // Smooth follow
     this.pos.lerp(target, this.SMOOTHNESS);
 
-    // Don't clip underground
-    if (this.pos.y < carPos.y + 2) this.pos.y = carPos.y + 2;
+    // Clamp above terrain surface
+    if (this.pos.y < carPos.y + 2.5) this.pos.y = carPos.y + 2.5;
 
-    // Look slightly ahead of the car
+    // ── Look-ahead: slightly in front of the car ──────────────────────────
     const lookTarget = new THREE.Vector3(
-      carPos.x - sinY * 6,
-      carPos.y + 1.5,
-      carPos.z - cosY * 6
+      carPos.x + sinY * 5,   // ahead of car
+      carPos.y + 1.2,
+      carPos.z + cosY * 5    // ahead of car
     );
-    this.lookAt.lerp(lookTarget, this.SMOOTHNESS * 1.5);
+    this.lookAt.lerp(lookTarget, this.SMOOTHNESS * 1.8);
 
-    this.camera.position.copy(this.pos);
+    // ── Camera shake at high speed ────────────────────────────────────────
+    this.shakeIntensity = speedFactor * 0.06;
+    this.shakeOffset.set(
+      (Math.random() - 0.5) * this.shakeIntensity,
+      (Math.random() - 0.5) * this.shakeIntensity * 0.5,
+      0
+    );
+
+    this.camera.position.copy(this.pos).add(this.shakeOffset);
     this.camera.lookAt(this.lookAt);
   }
 }
