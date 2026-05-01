@@ -84,11 +84,6 @@ export const GameUI: React.FC<GameUIProps> = ({ onGameStateUpdate }) => {
       <canvas
         ref={canvasRef}
         className="game-canvas"
-        style={{
-          display: "block",
-          width: "100%",
-          height: "100%",
-        }}
       />
 
       {/* HUD Overlay */}

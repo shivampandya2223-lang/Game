@@ -4,7 +4,7 @@
  */
 
 import * as THREE from 'three';
-import { Body, World, Shape } from 'cannon-es';
+import { Body, World, Box, Vec3 } from 'cannon-es';
 import { SimplexNoise } from '../utils/noise';
 
 interface TerrainChunk {
@@ -109,7 +109,8 @@ export class TerrainSystem {
       heightData.push(positions[i * 3 + 1]);
     }
 
-    body.addShape(new Shape());
+    // Use a flat box as a simplified collision surface for the chunk
+    body.addShape(new Box(new Vec3(this.chunkSize / 2, 0.5, this.chunkSize / 2)));
     body.position.set(
       chunkX * this.chunkSize,
       0,
