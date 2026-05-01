@@ -1,6 +1,6 @@
 /**
  * Terrain System
- * Generates procedural infinite desert with chunk-based loading
+ * Infinite procedural desert — warm sand dunes, never ending
  */
 
 import * as THREE from 'three';
@@ -10,189 +10,182 @@ import { SimplexNoise } from '../utils/noise';
 interface TerrainChunk {
   mesh: THREE.Mesh;
   body: Body;
-  position: { x: number; z: number };
-  loaded: boolean;
+  chunkX: number;
+  chunkZ: number;
 }
 
 export class TerrainSystem {
   private scene: THREE.Scene;
   private world: World;
   private noise: SimplexNoise;
-  private chunks: Map<string, TerrainChunk> = new Map();
-  private chunkSize = 128;
-  private chunkResolution = 64;
-  private loadDistance = 256;
-  private unloadDistance = 384;
-  private terrainMaterial: THREE.Material;
+  private chunks = new Map<string, TerrainChunk>();
 
-  constructor(scene: THREE.Scene, world: World, seed = 0) {
+  // Chunk settings
+  private readonly CHUNK   = 128;   // world units per chunk
+  private readonly RES     = 80;    // vertex resolution per chunk
+  private readonly LOAD_R  = 2;     // chunks radius to keep loaded
+  private readonly HEIGHT  = 18;    // max dune height
+
+  private terrainMat: THREE.Material;
+
+  constructor(scene: THREE.Scene, world: World, seed = 42) {
     this.scene = scene;
     this.world = world;
     this.noise = new SimplexNoise(seed);
+    this.terrainMat = this.buildMaterial();
 
-    // Create sand material
-    this.terrainMaterial = new THREE.MeshStandardMaterial({
-      color: 0xdaa520,
+    // Pre-load the 5×5 area around origin
+    for (let x = -2; x <= 2; x++)
+      for (let z = -2; z <= 2; z++)
+        this.spawnChunk(x, z);
+  }
+
+  // ── Material ──────────────────────────────────────────────────────────────
+
+  private buildMaterial(): THREE.Material {
+    // Procedural canvas texture: warm sand gradient with subtle grain
+    const size = 512;
+    const cv   = document.createElement('canvas');
+    cv.width   = size;
+    cv.height  = size;
+    const ctx  = cv.getContext('2d')!;
+
+    const grd = ctx.createLinearGradient(0, 0, size, size);
+    grd.addColorStop(0,    '#c2975a');
+    grd.addColorStop(0.35, '#d4a96a');
+    grd.addColorStop(0.65, '#c08040');
+    grd.addColorStop(1,    '#b87030');
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, size, size);
+
+    // Sand grain noise
+    for (let i = 0; i < 18000; i++) {
+      const x = Math.random() * size;
+      const y = Math.random() * size;
+      const r = Math.random() * 1.4;
+      const a = Math.random() * 0.13;
+      ctx.fillStyle = `rgba(${Math.random() > 0.5 ? '255,220,160' : '90,55,20'},${a})`;
+      ctx.fillRect(x, y, r, r);
+    }
+
+    // Subtle ripple lines (wind marks)
+    ctx.strokeStyle = 'rgba(180,130,60,0.08)';
+    ctx.lineWidth   = 1;
+    for (let y = 0; y < size; y += 12) {
+      ctx.beginPath();
+      for (let x = 0; x < size; x++) {
+        const wave = Math.sin((x + y * 0.3) * 0.15) * 3;
+        ctx[x === 0 ? 'moveTo' : 'lineTo'](x, y + wave);
+      }
+      ctx.stroke();
+    }
+
+    const tex       = new THREE.CanvasTexture(cv);
+    tex.wrapS       = THREE.RepeatWrapping;
+    tex.wrapT       = THREE.RepeatWrapping;
+    tex.repeat.set(6, 6);
+
+    return new THREE.MeshStandardMaterial({
+      map      : tex,
+      color    : new THREE.Color(0xd4a96a),
+      roughness: 0.95,
       metalness: 0.0,
-      roughness: 0.9,
-      map: this.createSandTexture(),
     });
   }
 
-  private createSandTexture(): THREE.Texture {
-    const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 512;
-    const ctx = canvas.getContext('2d')!;
+  // ── Height function ────────────────────────────────────────────────────────
 
-    // Create sandy texture
-    for (let i = 0; i < 10000; i++) {
-      const x = Math.random() * 512;
-      const y = Math.random() * 512;
-      const size = Math.random() * 2;
-      ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.1})`;
-      ctx.fillRect(x, y, size, size);
+  getTerrainHeightAt(wx: number, wz: number): number {
+    const n = this.noise;
+    // Large rolling dunes
+    const macro = n.fbm(wx * 0.0018, wz * 0.0018, 5, 0.55, 2.1) * this.HEIGHT;
+    // Medium ripples
+    const mid   = n.fbm(wx * 0.008,  wz * 0.008,  3, 0.6,  2.0) * 3.5;
+    // Fine surface detail
+    const fine  = n.noise(wx * 0.04, wz * 0.04) * 0.6;
+    return Math.max(macro + mid + fine, 0);
+  }
+
+  // ── Chunk mesh ────────────────────────────────────────────────────────────
+
+  private buildChunkMesh(cx: number, cz: number): THREE.Mesh {
+    const geo = new THREE.PlaneGeometry(this.CHUNK, this.CHUNK, this.RES, this.RES);
+    geo.rotateX(-Math.PI / 2);
+
+    const pos = geo.attributes.position.array as Float32Array;
+    for (let i = 0; i < pos.length; i += 3) {
+      const wx = pos[i]     + cx * this.CHUNK;
+      const wz = pos[i + 2] + cz * this.CHUNK;
+      pos[i + 1] = this.getTerrainHeightAt(wx, wz);
     }
 
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4);
-    return texture;
+    geo.attributes.position.needsUpdate = true;
+    geo.computeVertexNormals();
+
+    const mesh = new THREE.Mesh(geo, this.terrainMat);
+    mesh.position.set(cx * this.CHUNK, 0, cz * this.CHUNK);
+    mesh.receiveShadow = true;
+    mesh.castShadow    = false;
+    return mesh;
   }
 
-  private getChunkKey(x: number, z: number): string {
-    return `${Math.floor(x / this.chunkSize)},${Math.floor(z / this.chunkSize)}`;
-  }
+  // ── Chunk body ────────────────────────────────────────────────────────────
 
-  private generateChunkMesh(chunkX: number, chunkZ: number): THREE.Mesh {
-    const geometry = new THREE.PlaneGeometry(
-      this.chunkSize,
-      this.chunkSize,
-      this.chunkResolution,
-      this.chunkResolution
-    );
-
-    // Rotate to be horizontal
-    geometry.rotateX(-Math.PI / 2);
-
-    const positions = geometry.attributes.position;
-    const posArray = positions.array as Float32Array;
-
-    // Set heights based on noise
-    for (let i = 0; i < posArray.length; i += 3) {
-      const x = posArray[i] + chunkX * this.chunkSize;
-      const z = posArray[i + 2] + chunkZ * this.chunkSize;
-
-      const height = this.noise.fbm(x * 0.001, z * 0.001, 6, 0.6, 2.0) * 15 +
-                    this.noise.fbm(x * 0.01, z * 0.01, 3, 0.7, 2.0) * 3;
-
-      posArray[i + 1] = Math.max(height, 0);
-    }
-
-    positions.needsUpdate = true;
-    geometry.computeVertexNormals();
-
-    return new THREE.Mesh(geometry, this.terrainMaterial);
-  }
-
-  private generateChunkBody(chunkX: number, chunkZ: number, mesh: THREE.Mesh): Body {
-
+  private buildChunkBody(cx: number, cz: number): Body {
+    const half = this.CHUNK / 2;
     const body = new Body({ mass: 0 });
-
-    // Create simplified collision shape using heightfield
-    const heightData: number[] = [];
-    const positions = (mesh.geometry as THREE.PlaneGeometry).attributes.position.array as Float32Array;
-
-    const gridSize = this.chunkResolution + 1;
-    for (let i = 0; i < gridSize * gridSize; i++) {
-      heightData.push(positions[i * 3 + 1]);
-    }
-
-    // Use a flat box as a simplified collision surface for the chunk
-    body.addShape(new Box(new Vec3(this.chunkSize / 2, 0.5, this.chunkSize / 2)));
-    body.position.set(
-      chunkX * this.chunkSize,
-      0,
-      chunkZ * this.chunkSize
-    );
-
+    body.addShape(new Box(new Vec3(half, 1, half)));
+    body.position.set(cx * this.CHUNK, -1, cz * this.CHUNK);
     return body;
   }
 
-  private createChunk(chunkX: number, chunkZ: number): TerrainChunk {
-    const mesh = this.generateChunkMesh(chunkX, chunkZ);
-    mesh.position.set(
-      chunkX * this.chunkSize,
-      0,
-      chunkZ * this.chunkSize
-    );
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
+  // ── Spawn / despawn ────────────────────────────────────────────────────────
 
-    const body = this.generateChunkBody(chunkX, chunkZ, mesh);
+  private key(cx: number, cz: number) { return `${cx},${cz}`; }
+
+  private spawnChunk(cx: number, cz: number): void {
+    const k = this.key(cx, cz);
+    if (this.chunks.has(k)) return;
+
+    const mesh = this.buildChunkMesh(cx, cz);
+    const body = this.buildChunkBody(cx, cz);
 
     this.scene.add(mesh);
     this.world.addBody(body);
-
-    const key = this.getChunkKey(chunkX * this.chunkSize, chunkZ * this.chunkSize);
-    const chunk: TerrainChunk = {
-      mesh,
-      body,
-      position: { x: chunkX, z: chunkZ },
-      loaded: true,
-    };
-
-    this.chunks.set(key, chunk);
-    return chunk;
+    this.chunks.set(k, { mesh, body, chunkX: cx, chunkZ: cz });
   }
+
+  private removeChunk(k: string): void {
+    const c = this.chunks.get(k);
+    if (!c) return;
+    this.scene.remove(c.mesh);
+    this.world.removeBody(c.body);
+    c.mesh.geometry.dispose();
+    this.chunks.delete(k);
+  }
+
+  // ── Update (streaming) ─────────────────────────────────────────────────────
 
   update(playerPos: THREE.Vector3): void {
-    const playerChunkX = Math.floor(playerPos.x / this.chunkSize);
-    const playerChunkZ = Math.floor(playerPos.z / this.chunkSize);
+    const px = Math.round(playerPos.x / this.CHUNK);
+    const pz = Math.round(playerPos.z / this.CHUNK);
+    const R  = this.LOAD_R;
 
-    // Load nearby chunks
-    const loadRange = Math.ceil(this.loadDistance / this.chunkSize);
-    for (let x = playerChunkX - loadRange; x <= playerChunkX + loadRange; x++) {
-      for (let z = playerChunkZ - loadRange; z <= playerChunkZ + loadRange; z++) {
-        const key = this.getChunkKey(x * this.chunkSize, z * this.chunkSize);
-        if (!this.chunks.has(key)) {
-          this.createChunk(x, z);
-        }
-      }
-    }
+    // Load nearby
+    for (let x = px - R; x <= px + R; x++)
+      for (let z = pz - R; z <= pz + R; z++)
+        this.spawnChunk(x, z);
 
-    // Unload distant chunks
-    this.chunks.forEach((chunk, key) => {
-      const distance = Math.sqrt(
-        Math.pow(chunk.position.x * this.chunkSize - playerPos.x, 2) +
-        Math.pow(chunk.position.z * this.chunkSize - playerPos.z, 2)
-      );
-
-      if (distance > this.unloadDistance) {
-        this.scene.remove(chunk.mesh);
-        this.world.removeBody(chunk.body);
-        this.chunks.delete(key);
-      }
+    // Unload distant
+    this.chunks.forEach((_, k) => {
+      const [cx, cz] = k.split(',').map(Number);
+      if (Math.abs(cx - px) > R + 1 || Math.abs(cz - pz) > R + 1)
+        this.removeChunk(k);
     });
-  }
-
-  getTerrainHeightAt(x: number, z: number): number {
-    // Simple height estimation from noise
-    return Math.max(
-      this.noise.fbm(x * 0.001, z * 0.001, 6, 0.6, 2.0) * 15 +
-      this.noise.fbm(x * 0.01, z * 0.01, 3, 0.7, 2.0) * 3,
-      0
-    );
   }
 
   dispose(): void {
-    this.chunks.forEach((chunk) => {
-      this.scene.remove(chunk.mesh);
-      this.world.removeBody(chunk.body);
-      chunk.mesh.geometry.dispose();
-    });
-    this.chunks.clear();
-    (this.terrainMaterial as THREE.Material).dispose();
+    this.chunks.forEach((_, k) => this.removeChunk(k));
+    (this.terrainMat as THREE.Material).dispose();
   }
 }

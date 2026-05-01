@@ -1,203 +1,174 @@
 /**
  * Lighting System
- * Handles dynamic day-night cycle with realistic lighting
+ * Desert day-night cycle: blazing noon sun → fiery sunset → starry night
  */
 
 import * as THREE from 'three';
 
 export interface LightingState {
-  timeOfDay: number;
+  timeOfDay: number;   // 0-24
   sunIntensity: number;
-  sunColor: THREE.Color;
   skyColor: THREE.Color;
   ambientIntensity: number;
+  period: string;
 }
+
+interface ColorStop { time: number; sky: THREE.Color; fog: THREE.Color; sun: THREE.Color; ambient: number; }
 
 export class LightingSystem {
   private scene: THREE.Scene;
-  private sunLight: THREE.DirectionalLight;
-  private ambientLight: THREE.AmbientLight;
+  private sun: THREE.DirectionalLight;
+  private ambient: THREE.AmbientLight;
+  private hemi: THREE.HemisphereLight;
   private skyMesh: THREE.Mesh;
   private fog: THREE.Fog;
-  
-  // Time tracking
-  private timeOfDay = 6; // 0-24 hours
-  private timeSpeed = 0.005; // Speed of time progression
-  
-  // Color palettes
-  private skyColors = [
-    { time: 0, color: new THREE.Color(0x0a0a1a) },    // Midnight
-    { time: 4, color: new THREE.Color(0x1a1a3a) },    // Pre-dawn
-    { time: 6, color: new THREE.Color(0xff6b35) },    // Sunrise
-    { time: 8, color: new THREE.Color(0x87ceeb) },    // Morning
-    { time: 12, color: new THREE.Color(0x87ceeb) },   // Noon
-    { time: 16, color: new THREE.Color(0xff8c42) },   // Afternoon
-    { time: 18, color: new THREE.Color(0xff6b35) },   // Sunset
-    { time: 20, color: new THREE.Color(0x1a1a3a) },   // Dusk
-    { time: 24, color: new THREE.Color(0x0a0a1a) },   // Night
+
+  private timeOfDay = 14;          // start mid-afternoon
+  private readonly TIME_SPEED = 0.004; // real-time → game hours
+
+  // Desert palette keyframes
+  private readonly STOPS: ColorStop[] = [
+    { time:  0, sky: new THREE.Color(0x05050f), fog: new THREE.Color(0x0a0a20), sun: new THREE.Color(0x8888cc), ambient: 0.08 },
+    { time:  5, sky: new THREE.Color(0x2a1a0a), fog: new THREE.Color(0x3a2010), sun: new THREE.Color(0xff9940), ambient: 0.15 },
+    { time:  6, sky: new THREE.Color(0xff7030), fog: new THREE.Color(0xff9050), sun: new THREE.Color(0xffcc80), ambient: 0.30 },
+    { time:  8, sky: new THREE.Color(0x4fa0e0), fog: new THREE.Color(0xd4a96a), sun: new THREE.Color(0xfff0c0), ambient: 0.50 },
+    { time: 12, sky: new THREE.Color(0x2a86e0), fog: new THREE.Color(0xd0a060), sun: new THREE.Color(0xffffff), ambient: 0.65 },
+    { time: 16, sky: new THREE.Color(0x3a90d8), fog: new THREE.Color(0xc89050), sun: new THREE.Color(0xffe090), ambient: 0.55 },
+    { time: 18, sky: new THREE.Color(0xff5010), fog: new THREE.Color(0xff7030), sun: new THREE.Color(0xff8040), ambient: 0.35 },
+    { time: 19, sky: new THREE.Color(0x200a00), fog: new THREE.Color(0x3a1800), sun: new THREE.Color(0xff5020), ambient: 0.15 },
+    { time: 22, sky: new THREE.Color(0x020208), fog: new THREE.Color(0x060614), sun: new THREE.Color(0x6060a0), ambient: 0.07 },
+    { time: 24, sky: new THREE.Color(0x05050f), fog: new THREE.Color(0x0a0a20), sun: new THREE.Color(0x8888cc), ambient: 0.08 },
   ];
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
 
-    // Setup directional light (sun)
-    this.sunLight = new THREE.DirectionalLight(0xffffff, 1);
-    this.sunLight.castShadow = true;
-    this.sunLight.shadow.camera.far = 500;
-    this.sunLight.shadow.camera.left = -200;
-    this.sunLight.shadow.camera.right = 200;
-    this.sunLight.shadow.camera.top = 200;
-    this.sunLight.shadow.camera.bottom = -200;
-    this.sunLight.shadow.mapSize.width = 2048;
-    this.sunLight.shadow.mapSize.height = 2048;
-    this.sunLight.shadow.bias = -0.0001;
-    scene.add(this.sunLight);
+    // ── Sun ────────────────────────────────────────────────────────────────
+    this.sun = new THREE.DirectionalLight(0xffffff, 1.8);
+    this.sun.castShadow = true;
+    this.sun.shadow.camera.far    = 600;
+    this.sun.shadow.camera.left   = -250;
+    this.sun.shadow.camera.right  =  250;
+    this.sun.shadow.camera.top    =  250;
+    this.sun.shadow.camera.bottom = -250;
+    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.bias          = -0.0003;
+    this.sun.shadow.normalBias    = 0.02;
+    scene.add(this.sun);
+    scene.add(this.sun.target); // target stays at 0,0,0
 
-    // Setup ambient light
-    this.ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-    scene.add(this.ambientLight);
+    // ── Hemisphere (sky/ground fill) ───────────────────────────────────────
+    this.hemi = new THREE.HemisphereLight(0x87ceeb, 0xd4a060, 0.6);
+    scene.add(this.hemi);
 
-    // Create sky
-    this.skyMesh = this.createSkyMesh();
+    // ── Ambient ────────────────────────────────────────────────────────────
+    this.ambient = new THREE.AmbientLight(0xffeedd, 0.5);
+    scene.add(this.ambient);
+
+    // ── Sky sphere ────────────────────────────────────────────────────────
+    this.skyMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(900, 32, 16),
+      new THREE.MeshBasicMaterial({ color: 0x2a86e0, side: THREE.BackSide, fog: false })
+    );
     scene.add(this.skyMesh);
 
-    // Setup fog
-    this.fog = new THREE.Fog(0x87ceeb, 500, 1000);
+    // ── Fog (desert haze) ─────────────────────────────────────────────────
+    this.fog = new THREE.Fog(0xd4a96a, 200, 900);
     scene.fog = this.fog;
 
-    // Configure renderer settings
-    scene.background = new THREE.Color(0x87ceeb);
+    this.applyTime();
   }
 
-  private createSkyMesh(): THREE.Mesh {
-    const geometry = new THREE.SphereGeometry(400, 64, 64);
-    const material = new THREE.MeshBasicMaterial({
-      color: 0x87ceeb,
-      side: THREE.BackSide,
-    });
-    const mesh = new THREE.Mesh(geometry, material);
-    return mesh;
-  }
+  // ── Interpolation helpers ─────────────────────────────────────────────────
 
-  private interpolateColor(_t: number): THREE.Color {
-    // Normalize time to 0-1
-    const normalizedTime = ((this.timeOfDay % 24) + 24) % 24;
-
-    // Find surrounding color points
-    let before = this.skyColors[0];
-    let after = this.skyColors[this.skyColors.length - 1];
-
-    for (let i = 0; i < this.skyColors.length - 1; i++) {
-      if (normalizedTime >= this.skyColors[i].time && normalizedTime <= this.skyColors[i + 1].time) {
-        before = this.skyColors[i];
-        after = this.skyColors[i + 1];
-        break;
+  private interp(t: number): ColorStop {
+    const stops = this.STOPS;
+    let a = stops[0], b = stops[stops.length - 1];
+    for (let i = 0; i < stops.length - 1; i++) {
+      if (t >= stops[i].time && t <= stops[i + 1].time) {
+        a = stops[i]; b = stops[i + 1]; break;
       }
     }
+    const range = b.time - a.time || 1;
+    const p     = (t - a.time) / range;
+    const ep    = p * p * (3 - 2 * p); // smoothstep
 
-    // Interpolate between colors
-    const range = after.time - before.time;
-    const progress = (normalizedTime - before.time) / range;
-    const easeProgress = Math.sin(progress * Math.PI) * 0.5 + 0.5; // Smooth interpolation
-
-    const result = new THREE.Color();
-    result.lerpColors(before.color, after.color, easeProgress);
-    return result;
+    const sky = new THREE.Color().copy(a.sky).lerp(b.sky, ep);
+    const fog = new THREE.Color().copy(a.fog).lerp(b.fog, ep);
+    const sun = new THREE.Color().copy(a.sun).lerp(b.sun, ep);
+    const ambient = a.ambient + (b.ambient - a.ambient) * ep;
+    return { time: t, sky, fog, sun, ambient };
   }
 
-  private getSunIntensity(): number {
-    const normalizedTime = ((this.timeOfDay % 24) + 24) % 24;
-
-    // Sun intensity curve
-    if (normalizedTime >= 6 && normalizedTime <= 18) {
-      // Daytime - peak at noon
-      const midday = Math.abs(normalizedTime - 12);
-      return Math.max(0.3, 1 - midday * 0.06);
-    } else if (normalizedTime > 18 && normalizedTime < 20) {
-      // Sunset fade
-      return 1 - (normalizedTime - 18) * 0.5;
-    } else if (normalizedTime > 4 && normalizedTime < 6) {
-      // Sunrise fade
-      return (normalizedTime - 4) * 0.5;
-    } else {
-      // Night - faint moonlight
-      return 0.1;
-    }
+  private sunPosition(t: number): THREE.Vector3 {
+    // Arc from east (t=6) through zenith (t=12) to west (t=18)
+    const angle  = ((t - 6) / 12) * Math.PI;      // 0 → π across the sky
+    const radius = 400;
+    return new THREE.Vector3(
+      Math.cos(angle - Math.PI / 2) * radius,
+      Math.sin(angle) * radius + 30,
+      -60
+    );
   }
 
-  private getSunPosition(): { x: number; y: number; z: number } {
-    const normalizedTime = ((this.timeOfDay % 24) + 24) % 24;
-    const angle = (normalizedTime / 24) * Math.PI * 2 - Math.PI / 2;
-
-    const distance = 250;
-    return {
-      x: Math.cos(angle) * distance,
-      y: Math.sin(angle) * distance + 50,
-      z: 150,
-    };
+  private sunIntensity(t: number): number {
+    if (t >= 6  && t <= 18) return Math.max(0.2, Math.sin(((t - 6) / 12) * Math.PI) * 2.2);
+    if (t > 18  && t < 20)  return (20 - t) * 0.15;
+    if (t > 4   && t < 6)   return (t - 4)  * 0.15;
+    return 0.06; // moonlight
   }
 
-  update(deltaTime: number): void {
-    // Update time of day
-    this.timeOfDay += deltaTime * this.timeSpeed;
-    if (this.timeOfDay >= 24) {
-      this.timeOfDay -= 24;
-    }
+  // ── Apply current time to scene ───────────────────────────────────────────
 
-    const intensity = this.getSunIntensity();
-    const sunColor = this.interpolateColor(this.timeOfDay);
-    const sunPos = this.getSunPosition();
+  private applyTime(): void {
+    const t   = this.timeOfDay;
+    const c   = this.interp(t);
+    const pos = this.sunPosition(t);
+    const si  = this.sunIntensity(t);
 
-    // Update sun light
-    this.sunLight.color = sunColor;
-    this.sunLight.intensity = Math.max(intensity, 0.1);
-    this.sunLight.position.set(sunPos.x, sunPos.y, sunPos.z);
+    this.sun.position.copy(pos);
+    this.sun.color.copy(c.sun);
+    this.sun.intensity      = si;
+    this.sun.castShadow     = si > 0.2;
 
-    // Update ambient light
-    this.ambientLight.intensity = Math.max(intensity * 0.5, 0.15);
-    this.ambientLight.color = this.interpolateColor(this.timeOfDay);
+    this.ambient.color.copy(c.sun);
+    this.ambient.intensity  = c.ambient;
 
-    // Update sky color
-    const skyMaterial = new THREE.MeshBasicMaterial({
-      color: this.interpolateColor(this.timeOfDay),
-      side: THREE.BackSide,
-    });
-    this.skyMesh.material = skyMaterial;
+    this.hemi.color.copy(c.sky);          // HemisphereLight sky = .color
+    this.hemi.groundColor.set(0xd4a060);
+    this.hemi.intensity     = c.ambient * 0.8;
 
-    // Update fog color to match sky
-    const fogColor = this.interpolateColor(this.timeOfDay);
-    (this.fog.color as THREE.Color).copy(fogColor);
-
-    // Update background
-    if (this.scene.background instanceof THREE.Color) {
-      this.scene.background.copy(fogColor);
-    } else {
-      this.scene.background = fogColor.clone();
-    }
+    (this.skyMesh.material as THREE.MeshBasicMaterial).color.copy(c.sky);
+    this.fog.color.copy(c.fog);
+    this.scene.background = c.sky.clone();
   }
+
+  // ── Update ────────────────────────────────────────────────────────────────
+
+  update(dt: number): void {
+    this.timeOfDay = (this.timeOfDay + dt * this.TIME_SPEED) % 24;
+    this.applyTime();
+  }
+
+  setTimeOfDay(h: number): void { this.timeOfDay = h % 24; this.applyTime(); }
 
   getState(): LightingState {
+    const t = this.timeOfDay;
+    let period = 'Night';
+    if      (t >= 6  && t < 12) period = 'Morning';
+    else if (t >= 12 && t < 17) period = 'Afternoon';
+    else if (t >= 17 && t < 20) period = 'Evening';
     return {
-      timeOfDay: this.timeOfDay,
-      sunIntensity: this.getSunIntensity(),
-      sunColor: new THREE.Color(this.sunLight.color),
-      skyColor: new THREE.Color((this.skyMesh.material as THREE.MeshBasicMaterial).color),
-      ambientIntensity: this.ambientLight.intensity,
+      timeOfDay      : t,
+      sunIntensity   : this.sunIntensity(t),
+      skyColor       : (this.skyMesh.material as THREE.MeshBasicMaterial).color.clone(),
+      ambientIntensity: this.ambient.intensity,
+      period,
     };
-  }
-
-  setTimeOfDay(hours: number): void {
-    this.timeOfDay = hours % 24;
-  }
-
-  setTimeSpeed(speed: number): void {
-    this.timeSpeed = speed;
   }
 
   dispose(): void {
-    this.scene.remove(this.sunLight);
-    this.scene.remove(this.ambientLight);
-    this.scene.remove(this.skyMesh);
+    this.scene.remove(this.sun, this.hemi, this.ambient, this.skyMesh);
     this.skyMesh.geometry.dispose();
     (this.skyMesh.material as THREE.Material).dispose();
   }

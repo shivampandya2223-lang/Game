@@ -1,116 +1,106 @@
 /**
- * Game UI Component
- * Displays HUD overlay with speed, time of day, etc.
+ * GameUI — Desert Buggy HUD
+ * Minimal cinematic overlay: speed, time-of-day, FPS, controls
  */
 
-import React, { useEffect, useRef } from "react";
-import type { GameState } from "../systems/game-engine";
-import { GameEngine } from "../systems/game-engine";
-import "./GameUI.css";
+import React, { useEffect, useRef } from 'react';
+import { GameEngine } from '../systems/game-engine';
+import './GameUI.css';
 
-interface GameUIProps {
-  onGameStateUpdate?: (state: GameState) => void;
-}
+const GameUI: React.FC = () => {
+  const canvasRef    = useRef<HTMLCanvasElement>(null);
+  const engineRef    = useRef<GameEngine | null>(null);
+  const rafRef       = useRef<number>(0);
 
-export const GameUI: React.FC<GameUIProps> = ({ onGameStateUpdate }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const gameEngineRef = useRef<GameEngine | null>(null);
-  const gameStateRef = useRef<GameState | null>(null);
-  const hudElementsRef = useRef<{
-    speedValue?: HTMLDivElement;
-    timeValue?: HTMLDivElement;
-    timePeriod?: HTMLDivElement;
-    fpsDisplay?: HTMLDivElement;
-  }>({});
+  // DOM refs for direct mutation (no React re-renders every frame)
+  const speedNumRef  = useRef<HTMLSpanElement>(null);
+  const speedBarRef  = useRef<HTMLDivElement>(null);
+  const timeRef      = useRef<HTMLSpanElement>(null);
+  const periodRef    = useRef<HTMLSpanElement>(null);
+  const fpsRef       = useRef<HTMLSpanElement>(null);
+  const coordRef     = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
     if (!canvasRef.current) return;
 
-    // Initialize game
-    const gameEngine = new GameEngine(canvasRef.current);
-    gameEngineRef.current = gameEngine;
-    gameEngine.start();
+    const engine = new GameEngine(canvasRef.current);
+    engineRef.current = engine;
+    engine.start();
 
-    // Cache HUD elements for direct DOM updates
-    hudElementsRef.current = {
-      speedValue: document.querySelector(".speed-value") as HTMLDivElement,
-      timeValue: document.querySelector(".time-value") as HTMLDivElement,
-      timePeriod: document.querySelector(".time-period") as HTMLDivElement,
-      fpsDisplay: document.querySelector(".fps-display") as HTMLDivElement,
-    };
-
-    // Update HUD every frame without React re-renders
+    // HUD update loop — runs independently of React
     const updateHUD = () => {
-      const state = gameEngine.getGameState();
-      gameStateRef.current = state;
-      onGameStateUpdate?.(state);
+      const state = engine.getGameState();
+      const { vehicle, lighting, fps } = state;
 
-      // Direct DOM updates to avoid React re-renders
-      if (hudElementsRef.current.speedValue) {
-        hudElementsRef.current.speedValue.textContent = Math.floor(
-          state.vehicle.speed,
-        ).toString();
-      }
-      if (hudElementsRef.current.timeValue) {
-        const h = Math.floor(state.lighting.timeOfDay);
-        const m = Math.floor((state.lighting.timeOfDay - h) * 60);
-        hudElementsRef.current.timeValue.textContent = `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
-      }
-      if (hudElementsRef.current.timePeriod) {
-        const h = Math.floor(state.lighting.timeOfDay);
-        let period = "Night";
-        if (h >= 6 && h < 12) period = "Morning";
-        else if (h >= 12 && h < 18) period = "Afternoon";
-        else if (h >= 18 && h < 21) period = "Evening";
-        hudElementsRef.current.timePeriod.textContent = period;
-      }
-      if (hudElementsRef.current.fpsDisplay) {
-        hudElementsRef.current.fpsDisplay.textContent = `${state.fps} FPS`;
-      }
+      // Speed
+      const kmh = Math.floor(vehicle.speed);
+      if (speedNumRef.current)  speedNumRef.current.textContent  = String(kmh);
+      if (speedBarRef.current)  speedBarRef.current.style.width  = `${Math.min(kmh / 180 * 100, 100)}%`;
+
+      // Time
+      const h   = Math.floor(lighting.timeOfDay);
+      const m   = Math.floor((lighting.timeOfDay - h) * 60);
+      if (timeRef.current)   timeRef.current.textContent   = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+      if (periodRef.current) periodRef.current.textContent = lighting.period;
+
+      // FPS
+      if (fpsRef.current)  fpsRef.current.textContent  = `${fps} FPS`;
+
+      // Coordinates
+      const p = vehicle.position;
+      if (coordRef.current)
+        coordRef.current.textContent =
+          `${Math.floor(p.x)}, ${Math.floor(p.z)}`;
+
+      rafRef.current = requestAnimationFrame(updateHUD);
     };
+    rafRef.current = requestAnimationFrame(updateHUD);
 
-    const updateInterval = setInterval(updateHUD, 16);
-
-    // Cleanup
     return () => {
-      clearInterval(updateInterval);
-      gameEngine.dispose();
-      gameEngineRef.current = null;
+      cancelAnimationFrame(rafRef.current);
+      engine.dispose();
+      engineRef.current = null;
     };
-  }, [onGameStateUpdate]);
+  }, []);
 
   return (
-    <div className="game-container">
-      <canvas
-        ref={canvasRef}
-        className="game-canvas"
-      />
+    <div className="gc">
+      <canvas ref={canvasRef} className="gc__canvas" />
 
-      {/* HUD Overlay */}
+      {/* ── HUD ─────────────────────────────────────────── */}
       <div className="hud">
-        {/* Speed Indicator */}
-        <div className="speed-display">
-          <div className="speed-value">0</div>
-          <div className="speed-unit">km/h</div>
+
+        {/* Speed — bottom left */}
+        <div className="hud__speed">
+          <span className="hud__speed-num" ref={speedNumRef}>0</span>
+          <span className="hud__speed-unit">km/h</span>
+          <div className="hud__bar-bg">
+            <div className="hud__bar-fill" ref={speedBarRef} />
+          </div>
         </div>
 
-        {/* Time of Day */}
-        <div className="time-display">
-          <div className="time-value">00:00</div>
-          <div className="time-period">Morning</div>
+        {/* Time — top right */}
+        <div className="hud__time">
+          <span className="hud__time-val" ref={timeRef}>14:00</span>
+          <span className="hud__time-period" ref={periodRef}>Afternoon</span>
         </div>
 
-        {/* FPS Counter */}
-        <div className="fps-display">60 FPS</div>
-
-        {/* Controls Help */}
-        <div className="controls-help">
-          <div className="control-item">W / ↑ - Accelerate</div>
-          <div className="control-item">S / ↓ - Brake/Reverse</div>
-          <div className="control-item">A / ← - Turn Left</div>
-          <div className="control-item">D / → - Turn Right</div>
-          <div className="control-item">SPACE - Handbrake/Drift</div>
+        {/* FPS + coords — top left */}
+        <div className="hud__info">
+          <span ref={fpsRef}>60 FPS</span>
+          <span className="hud__coord">📍 <span ref={coordRef}>0, 0</span></span>
         </div>
+
+        {/* Controls — bottom right */}
+        <div className="hud__controls">
+          <div className="hud__ctrl-row"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Drive</div>
+          <div className="hud__ctrl-row"><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> Also works</div>
+          <div className="hud__ctrl-row"><kbd>Space</kbd> Handbrake / Drift</div>
+        </div>
+
+        {/* Desert title watermark */}
+        <div className="hud__title">Desert Racer</div>
+
       </div>
     </div>
   );

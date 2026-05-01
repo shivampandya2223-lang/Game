@@ -1,116 +1,65 @@
 /**
  * Camera System
- * Smooth third-person follow camera with cinematic feel
+ * Smooth third-person follow with speed-based zoom and slight lag
  */
 
 import * as THREE from 'three';
 
 export class CameraSystem {
   private camera: THREE.PerspectiveCamera;
-  private targetPosition = new THREE.Vector3();
-  private targetLookAt = new THREE.Vector3();
-  private currentPosition = new THREE.Vector3();
-  private currentLookAt = new THREE.Vector3();
 
-  // Camera settings
-  private distance = 25;
-  private height = 8;
-  private maxDistance = 35;
-  private minDistance = 15;
-  private smoothness = 0.08; // Lower = smoother
-  private shakeAmount = 0;
-  private shakeDecay = 0.95;
+  // Current smoothed values
+  private pos    = new THREE.Vector3(0, 15, 30);
+  private lookAt = new THREE.Vector3();
+
+  // Settings
+  private readonly BASE_DIST  = 20;
+  private readonly HEIGHT     = 9;
+  private readonly SMOOTHNESS = 0.06;  // lower = more lag / cinematic
 
   constructor(camera: THREE.PerspectiveCamera) {
     this.camera = camera;
-    this.camera.fov = 60;
-    this.camera.aspect = window.innerWidth / window.innerHeight;
-    this.camera.near = 0.1;
-    this.camera.far = 2000;
-    this.camera.updateProjectionMatrix();
-
-    this.currentPosition.copy(camera.position);
-    this.currentLookAt.copy(new THREE.Vector3(0, 0, 0));
-
-    // Handle window resize
-    window.addEventListener('resize', () => this.onWindowResize());
+    camera.fov  = 65;
+    camera.near = 0.3;
+    camera.far  = 1800;
+    camera.updateProjectionMatrix();
+    window.addEventListener('resize', () => this.onResize());
   }
 
-  private onWindowResize(): void {
+  private onResize(): void {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
   }
 
-  update(carPosition: THREE.Vector3, carRotation: THREE.Quaternion, carSpeed: number): void {
-    // Get car's forward direction
-    const forward = new THREE.Vector3(0, 0, 1);
-    forward.applyQuaternion(carRotation);
+  update(carPos: THREE.Vector3, carYaw: number, speedKmh: number): void {
+    // Dynamic distance — zoom out slightly at high speed
+    const speedFactor = Math.min(speedKmh / 150, 1);
+    const dist = this.BASE_DIST + speedFactor * 12;
 
-    // Get car's right direction
-    const right = new THREE.Vector3(1, 0, 0);
-    right.applyQuaternion(carRotation);
-
-    // Calculate camera target position (behind and above the car)
-    const backOffset = forward.clone().multiplyScalar(-this.distance);
-    const upOffset = new THREE.Vector3(0, this.height, 0);
-
-    // Add slight side offset for better perspective
-    const sideOffset = right.clone().multiplyScalar(2);
-
-    this.targetPosition.copy(carPosition);
-    this.targetPosition.add(backOffset);
-    this.targetPosition.add(upOffset);
-    this.targetPosition.add(sideOffset);
-
-    // Adjust distance based on speed (zoom out when going fast)
-    const speedFactor = Math.min(carSpeed / 100, 1);
-    const dynamicDistance = this.distance + speedFactor * 10;
-    this.targetPosition.copy(carPosition);
-    this.targetPosition.add(forward.clone().multiplyScalar(-dynamicDistance));
-    this.targetPosition.add(upOffset);
-    this.targetPosition.add(sideOffset);
-
-    // Look at point slightly ahead of car
-    this.targetLookAt.copy(carPosition);
-    const lookAheadOffset = forward.clone().multiplyScalar(10);
-    this.targetLookAt.add(lookAheadOffset);
-    this.targetLookAt.y += 2;
-
-    // Apply camera shake based on speed
-    this.shakeAmount = Math.min(carSpeed * 0.0005, 0.5);
-
-    // Smooth camera movement with easing
-    this.currentPosition.lerp(this.targetPosition, this.smoothness);
-    this.currentLookAt.lerp(this.targetLookAt, this.smoothness * 0.5);
-
-    // Apply shake
-    const shake = new THREE.Vector3(
-      (Math.random() - 0.5) * this.shakeAmount,
-      (Math.random() - 0.5) * this.shakeAmount,
-      (Math.random() - 0.5) * this.shakeAmount
+    // Target position: directly behind the car, elevated
+    const sinY = Math.sin(carYaw);
+    const cosY = Math.cos(carYaw);
+    const target = new THREE.Vector3(
+      carPos.x + sinY * dist,
+      carPos.y + this.HEIGHT + speedFactor * 3,
+      carPos.z + cosY * dist
     );
 
-    const finalPosition = this.currentPosition.clone().add(shake);
-    this.camera.position.copy(finalPosition);
-    this.camera.lookAt(this.currentLookAt);
+    // Smooth follow
+    this.pos.lerp(target, this.SMOOTHNESS);
 
-    // Decay shake
-    this.shakeAmount *= this.shakeDecay;
-  }
+    // Don't clip underground
+    if (this.pos.y < carPos.y + 2) this.pos.y = carPos.y + 2;
 
-  getCamera(): THREE.PerspectiveCamera {
-    return this.camera;
-  }
+    // Look slightly ahead of the car
+    const lookTarget = new THREE.Vector3(
+      carPos.x - sinY * 6,
+      carPos.y + 1.5,
+      carPos.z - cosY * 6
+    );
+    this.lookAt.lerp(lookTarget, this.SMOOTHNESS * 1.5);
 
-  setDistance(distance: number): void {
-    this.distance = Math.max(this.minDistance, Math.min(distance, this.maxDistance));
-  }
-
-  setHeight(height: number): void {
-    this.height = height;
-  }
-
-  setSmoothness(smoothness: number): void {
-    this.smoothness = Math.max(0.01, Math.min(smoothness, 0.3));
+    this.camera.position.copy(this.pos);
+    this.camera.lookAt(this.lookAt);
   }
 }

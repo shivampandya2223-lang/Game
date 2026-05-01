@@ -1,109 +1,127 @@
 /**
- * Particle Effects System
- * Creates dust clouds and other visual effects
+ * Particle System
+ * Sand dust kicked up behind the buggy, drifting in the desert wind
  */
 
 import * as THREE from 'three';
 
 interface Particle {
   mesh: THREE.Mesh;
-  velocity: THREE.Vector3;
+  vel: THREE.Vector3;
   life: number;
   maxLife: number;
-  startOpacity: number;
 }
 
 export class ParticleSystem {
   private scene: THREE.Scene;
   private particles: Particle[] = [];
-  private particleGeometry: THREE.BufferGeometry;
-  private particleMaterial: THREE.Material;
-  private maxParticles = 1000;
+  private readonly MAX = 600;
+
+  // Shared geometry — one sphere, instanced per particle
+  private geo: THREE.BufferGeometry;
+
+  // Sand colour palette
+  private readonly COLOURS = [0xd4a870, 0xc09050, 0xe0c090, 0xb87840, 0xddc080];
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
-
-    // Create particle geometry
-    this.particleGeometry = new THREE.SphereGeometry(0.2, 4, 4);
-
-    // Create particle material
-    this.particleMaterial = new THREE.MeshStandardMaterial({
-      color: 0xd4a574,
-      metalness: 0,
-      roughness: 0.9,
-      transparent: true,
-    });
+    this.geo   = new THREE.SphereGeometry(0.22, 4, 4);
   }
 
-  emitDust(position: THREE.Vector3, velocity: THREE.Vector3, count = 3): void {
-    if (this.particles.length >= this.maxParticles) {
-      return;
-    }
+  // ── Emit ─────────────────────────────────────────────────────────────────
+
+  emitDust(pos: THREE.Vector3, vel: THREE.Vector3, count = 4): void {
+    if (this.particles.length >= this.MAX) return;
 
     for (let i = 0; i < count; i++) {
-      const particleVelocity = velocity
-        .clone()
-        .add(
-          new THREE.Vector3(
-            (Math.random() - 0.5) * 10,
-            Math.random() * 15,
-            (Math.random() - 0.5) * 10
-          )
-        );
+      const col = this.COLOURS[Math.floor(Math.random() * this.COLOURS.length)];
+      const mat = new THREE.MeshStandardMaterial({
+        color      : col,
+        roughness  : 1,
+        transparent: true,
+        opacity    : 0.55 + Math.random() * 0.3,
+        depthWrite : false,
+      });
 
-      const particle: Particle = {
-        mesh: new THREE.Mesh(this.particleGeometry, this.particleMaterial.clone()),
-        velocity: particleVelocity,
-        life: 0,
-        maxLife: 1 + Math.random() * 1,
-        startOpacity: 0.6,
-      };
+      const mesh = new THREE.Mesh(this.geo, mat);
+      mesh.scale.setScalar(0.4 + Math.random() * 1.2);
+      mesh.position.copy(pos).add(new THREE.Vector3(
+        (Math.random() - 0.5) * 2,
+        Math.random() * 0.5,
+        (Math.random() - 0.5) * 2
+      ));
 
-      particle.mesh.position.copy(position);
-      particle.mesh.scale.set(0.5 + Math.random() * 0.5, 0.5 + Math.random() * 0.5, 0.5 + Math.random() * 0.5);
-      particle.mesh.castShadow = false;
-      particle.mesh.receiveShadow = false;
+      // Kick sideways + upward
+      const pVel = new THREE.Vector3(
+        vel.x * 0.2 + (Math.random() - 0.5) * 8,
+        2 + Math.random() * 7,
+        vel.z * 0.2 + (Math.random() - 0.5) * 8
+      );
 
-      this.scene.add(particle.mesh);
-      this.particles.push(particle);
+      this.scene.add(mesh);
+      this.particles.push({ mesh, vel: pVel, life: 0, maxLife: 0.8 + Math.random() * 1.2 });
     }
   }
 
-  update(deltaTime: number): void {
+  // ── Wind streaks (ambient sand wisps) ─────────────────────────────────────
+
+  emitWindStreak(origin: THREE.Vector3): void {
+    if (this.particles.length >= this.MAX - 10) return;
+    const count = 2;
+    for (let i = 0; i < count; i++) {
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xe0c890, transparent: true, opacity: 0.18, depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(this.geo, mat);
+      mesh.scale.set(0.2, 0.2, 1.5 + Math.random() * 2);
+      mesh.position.set(
+        origin.x + (Math.random() - 0.5) * 30,
+        origin.y + 0.3 + Math.random() * 1.5,
+        origin.z + (Math.random() - 0.5) * 30
+      );
+      const vel = new THREE.Vector3(3 + Math.random() * 4, 0.2, (Math.random() - 0.5) * 2);
+      this.scene.add(mesh);
+      this.particles.push({ mesh, vel, life: 0, maxLife: 1.5 + Math.random() * 1.5 });
+    }
+  }
+
+  // ── Update ────────────────────────────────────────────────────────────────
+
+  update(dt: number): void {
     for (let i = this.particles.length - 1; i >= 0; i--) {
-      const particle = this.particles[i];
+      const p = this.particles[i];
+      p.life += dt;
+      const progress = p.life / p.maxLife;
 
-      particle.life += deltaTime;
-      const progress = particle.life / particle.maxLife;
+      // Move
+      p.mesh.position.addScaledVector(p.vel, dt);
 
-      // Update position
-      particle.mesh.position.add(particle.velocity.clone().multiplyScalar(deltaTime));
+      // Gravity & drag
+      p.vel.y   -= 4.5 * dt;
+      p.vel.x   *= 0.97;
+      p.vel.z   *= 0.97;
 
-      // Apply gravity
-      particle.velocity.y -= 9.8 * deltaTime;
+      // Scale up slightly as it disperses
+      const sc = 1 + progress * 1.5;
+      p.mesh.scale.setScalar(p.mesh.scale.x > 0.1 ? p.mesh.scale.x * (1 + dt * 0.4) : 0.1);
 
-      // Fade out
-      const opacity = particle.startOpacity * (1 - progress);
-      (particle.mesh.material as any).opacity = Math.max(0, opacity);
+      // Fade
+      (p.mesh.material as THREE.MeshStandardMaterial).opacity = Math.max(0, (1 - progress) * 0.6);
 
-      // Remove dead particles
       if (progress >= 1) {
-        this.scene.remove(particle.mesh);
-        particle.mesh.geometry.dispose();
-        (particle.mesh.material as THREE.Material).dispose();
+        this.scene.remove(p.mesh);
+        (p.mesh.material as THREE.Material).dispose();
         this.particles.splice(i, 1);
       }
     }
   }
 
   dispose(): void {
-    this.particles.forEach((particle) => {
-      this.scene.remove(particle.mesh);
-      particle.mesh.geometry.dispose();
-      (particle.mesh.material as THREE.Material).dispose();
+    this.particles.forEach(p => {
+      this.scene.remove(p.mesh);
+      (p.mesh.material as THREE.Material).dispose();
     });
     this.particles = [];
-    this.particleGeometry.dispose();
-    (this.particleMaterial as THREE.Material).dispose();
+    this.geo.dispose();
   }
 }
