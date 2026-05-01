@@ -1,12 +1,20 @@
-import GameUI from './components/GameUI'
-import './App.css'
+import GameUI from "./components/GameUI";
+import "./App.css";
 
 function App() {
   return (
-    <div style={{ width: '100vw', height: '100vh', margin: 0, padding: 0, overflow: 'hidden' }}>
+    <div
+      style={{
+        width: "100vw",
+        height: "100vh",
+        margin: 0,
+        padding: 0,
+        overflow: "hidden",
+      }}
+    >
       <GameUI />
     </div>
-  )
+  );
 }
 
-export default App
+export default App;

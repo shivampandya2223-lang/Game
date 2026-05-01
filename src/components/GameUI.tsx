@@ -3,10 +3,10 @@
  * Displays HUD overlay with speed, time of day, etc.
  */
 
-import React, { useEffect, useRef } from 'react';
-import type { GameState } from '../systems/game-engine';
-import { GameEngine } from '../systems/game-engine';
-import './GameUI.css';
+import React, { useEffect, useRef } from "react";
+import type { GameState } from "../systems/game-engine";
+import { GameEngine } from "../systems/game-engine";
+import "./GameUI.css";
 
 interface GameUIProps {
   onGameStateUpdate?: (state: GameState) => void;
@@ -33,10 +33,10 @@ export const GameUI: React.FC<GameUIProps> = ({ onGameStateUpdate }) => {
 
     // Cache HUD elements for direct DOM updates
     hudElementsRef.current = {
-      speedValue: document.querySelector('.speed-value') as HTMLDivElement,
-      timeValue: document.querySelector('.time-value') as HTMLDivElement,
-      timePeriod: document.querySelector('.time-period') as HTMLDivElement,
-      fpsDisplay: document.querySelector('.fps-display') as HTMLDivElement,
+      speedValue: document.querySelector(".speed-value") as HTMLDivElement,
+      timeValue: document.querySelector(".time-value") as HTMLDivElement,
+      timePeriod: document.querySelector(".time-period") as HTMLDivElement,
+      fpsDisplay: document.querySelector(".fps-display") as HTMLDivElement,
     };
 
     // Update HUD every frame without React re-renders
@@ -47,20 +47,21 @@ export const GameUI: React.FC<GameUIProps> = ({ onGameStateUpdate }) => {
 
       // Direct DOM updates to avoid React re-renders
       if (hudElementsRef.current.speedValue) {
-        hudElementsRef.current.speedValue.textContent = Math.floor(state.vehicle.speed).toString();
+        hudElementsRef.current.speedValue.textContent = Math.floor(
+          state.vehicle.speed,
+        ).toString();
       }
       if (hudElementsRef.current.timeValue) {
         const h = Math.floor(state.lighting.timeOfDay);
         const m = Math.floor((state.lighting.timeOfDay - h) * 60);
-        hudElementsRef.current.timeValue.textContent =
-          `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+        hudElementsRef.current.timeValue.textContent = `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
       }
       if (hudElementsRef.current.timePeriod) {
         const h = Math.floor(state.lighting.timeOfDay);
-        let period = 'Night';
-        if (h >= 6 && h < 12) period = 'Morning';
-        else if (h >= 12 && h < 18) period = 'Afternoon';
-        else if (h >= 18 && h < 21) period = 'Evening';
+        let period = "Night";
+        if (h >= 6 && h < 12) period = "Morning";
+        else if (h >= 12 && h < 18) period = "Afternoon";
+        else if (h >= 18 && h < 21) period = "Evening";
         hudElementsRef.current.timePeriod.textContent = period;
       }
       if (hudElementsRef.current.fpsDisplay) {
@@ -84,9 +85,9 @@ export const GameUI: React.FC<GameUIProps> = ({ onGameStateUpdate }) => {
         ref={canvasRef}
         className="game-canvas"
         style={{
-          display: 'block',
-          width: '100%',
-          height: '100%',
+          display: "block",
+          width: "100%",
+          height: "100%",
         }}
       />
 
