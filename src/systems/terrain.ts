@@ -5,14 +5,15 @@
  */
 
 import * as THREE from 'three';
-import { Body, World, Heightfield, Vec3 } from 'cannon-es';
+import { Body, World, Heightfield } from 'cannon-es';
 import { SimplexNoise } from '../utils/noise';
 
 interface TerrainChunk {
   mesh: THREE.Mesh;
-  body: Body;
+  body?: Body;
   cx  : number;
   cz  : number;
+  lod : 'near' | 'far';
 }
 
 export class TerrainSystem {
@@ -22,9 +23,12 @@ export class TerrainSystem {
   private chunks = new Map<string, TerrainChunk>();
 
   private readonly CHUNK  = 128;
-  private readonly RES    = 64;
-  private readonly LOAD_R = 2;
+  private readonly RES_NEAR  = 64;
+  private readonly RES_FAR   = 18;
+  private readonly PHYSICS_R = 3;
+  private readonly VISUAL_R  = 9;
   private readonly H_MAX  = 22;
+  private readonly NORMAL_SAMPLE = 1.75;
 
   // Single shared material — world-space UVs eliminate seams
   private terrainMat!: THREE.MeshStandardMaterial;
@@ -41,9 +45,9 @@ export class TerrainSystem {
     this.buildTextures();
     this.terrainMat = this.buildMaterial();
 
-    for (let x = -2; x <= 2; x++)
-      for (let z = -2; z <= 2; z++)
-        this.spawnChunk(x, z);
+    for (let x = -this.VISUAL_R; x <= this.VISUAL_R; x++)
+      for (let z = -this.VISUAL_R; z <= this.VISUAL_R; z++)
+        this.ensureChunk(x, z, this.getDesiredLod(x, z, 0, 0));
   }
 
   // ── Textures ──────────────────────────────────────────────────────────────
@@ -58,37 +62,33 @@ export class TerrainSystem {
     cv.width  = S; cv.height = S;
     const ctx = cv.getContext('2d')!;
 
-    // ── Base sand gradient (diagonal) ─────────────────────────────────────
-    const grd = ctx.createLinearGradient(0, 0, S, S);
-    grd.addColorStop(0.00, '#c8935a');
-    grd.addColorStop(0.20, '#dba96a');
-    grd.addColorStop(0.45, '#c88040');
-    grd.addColorStop(0.70, '#b87030');
-    grd.addColorStop(1.00, '#a06028');
-    ctx.fillStyle = grd;
+    // Neutral tileable sand detail. Large colour variation belongs in
+    // world-space vertex colours so chunk/texture borders never show.
+    ctx.fillStyle = '#a86f35';
     ctx.fillRect(0, 0, S, S);
 
     // ── Coarse sand grain ─────────────────────────────────────────────────
-    for (let i = 0; i < 60000; i++) {
+    for (let i = 0; i < 90000; i++) {
       const x = Math.random() * S;
       const y = Math.random() * S;
-      const r = Math.random() * 2.0;
-      const a = Math.random() * 0.16;
+      const r = Math.random() * 1.35;
+      const a = Math.random() * 0.10;
       ctx.fillStyle = Math.random() > 0.5
-        ? `rgba(255,215,140,${a})`
-        : `rgba(75,40,8,${a})`;
+        ? `rgba(210,164,96,${a})`
+        : `rgba(82,54,28,${a})`;
       ctx.fillRect(x, y, r, r);
     }
 
-    // ── Wind ripple lines — two crossing angles ────────────────────────────
-    for (let pass = 0; pass < 3; pass++) {
-      const angle = [-0.22, 0.15, -0.08][pass];
+    // ── Wind ripple lines. Keep these subtle so repetition reads as sand
+    // grain, not as square texture tiles.
+    for (let pass = 0; pass < 2; pass++) {
+      const angle = [-0.18, 0.11][pass];
       ctx.save();
       ctx.translate(S / 2, S / 2);
       ctx.rotate(angle);
-      ctx.strokeStyle = `rgba(155,100,35,${[0.06, 0.05, 0.04][pass]})`;
+      ctx.strokeStyle = `rgba(94,67,34,${[0.035, 0.025][pass]})`;
       ctx.lineWidth = 1;
-      const spacing = [7, 11, 18][pass];
+      const spacing = [9, 15][pass];
       for (let y = -S * 1.5; y < S * 1.5; y += spacing) {
         ctx.beginPath();
         for (let x = -S * 1.5; x < S * 1.5; x += 2) {
@@ -101,48 +101,13 @@ export class TerrainSystem {
       ctx.restore();
     }
 
-    // ── Shadow pockets (dune hollows) ─────────────────────────────────────
-    for (let i = 0; i < 200; i++) {
-      const x  = Math.random() * S;
-      const y  = Math.random() * S;
-      const rx = 6 + Math.random() * 40;
-      const ry = 2 + Math.random() * 12;
-      const g2 = ctx.createRadialGradient(x, y, 0, x, y, rx);
-      g2.addColorStop(0, 'rgba(50,25,5,0.14)');
-      g2.addColorStop(1, 'rgba(50,25,5,0)');
-      ctx.save();
-      ctx.scale(1, ry / rx);
-      ctx.fillStyle = g2;
-      ctx.beginPath();
-      ctx.arc(x, y * (rx / ry), rx, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-
-    // ── Bright crest highlights ────────────────────────────────────────────
-    for (let i = 0; i < 80; i++) {
-      const x  = Math.random() * S;
-      const y  = Math.random() * S;
-      const rx = 4 + Math.random() * 20;
-      const ry = 1 + Math.random() * 4;
-      const g2 = ctx.createRadialGradient(x, y, 0, x, y, rx);
-      g2.addColorStop(0, 'rgba(255,230,170,0.18)');
-      g2.addColorStop(1, 'rgba(255,230,170,0)');
-      ctx.save();
-      ctx.scale(1, ry / rx);
-      ctx.fillStyle = g2;
-      ctx.beginPath();
-      ctx.arc(x, y * (rx / ry), rx, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-
     const tex = new THREE.CanvasTexture(cv);
     // NO repeat wrapping — we use world-space UVs so the texture tiles
     // seamlessly across chunk boundaries at a large world scale
     tex.wrapS      = THREE.RepeatWrapping;
     tex.wrapT      = THREE.RepeatWrapping;
     tex.anisotropy = 16;
+    tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
   }
 
@@ -186,13 +151,27 @@ export class TerrainSystem {
     ) * 0.5 + 0.5;
   }
 
+  private hash2(x: number, z: number): number {
+    const s = Math.sin(x * 127.1 + z * 311.7) * 43758.5453123;
+    return s - Math.floor(s);
+  }
+
+  private getTerrainNormalAt(wx: number, wz: number): THREE.Vector3 {
+    const e = this.NORMAL_SAMPLE;
+    const hL = this.getTerrainHeightAt(wx - e, wz);
+    const hR = this.getTerrainHeightAt(wx + e, wz);
+    const hD = this.getTerrainHeightAt(wx, wz - e);
+    const hU = this.getTerrainHeightAt(wx, wz + e);
+    return new THREE.Vector3(hL - hR, e * 2, hD - hU).normalize();
+  }
+
   // ── Material ──────────────────────────────────────────────────────────────
 
   private buildMaterial(): THREE.MeshStandardMaterial {
     return new THREE.MeshStandardMaterial({
       map         : this.colorTex,
       normalMap   : this.normalTex,
-      normalScale : new THREE.Vector2(1.4, 1.4),
+      normalScale : new THREE.Vector2(0.55, 0.55),
       roughness   : 0.97,
       metalness   : 0.0,
       vertexColors: true,   // height-based tinting blended on top
@@ -217,8 +196,8 @@ export class TerrainSystem {
 
   // ── Chunk mesh — world-space UVs ──────────────────────────────────────────
 
-  private buildChunkMesh(cx: number, cz: number): THREE.Mesh {
-    const N   = this.RES;
+  private buildChunkMesh(cx: number, cz: number, resolution: number): THREE.Mesh {
+    const N   = resolution;
     const geo = new THREE.PlaneGeometry(this.CHUNK, this.CHUNK, N, N);
     geo.rotateX(-Math.PI / 2);
 
@@ -235,13 +214,24 @@ export class TerrainSystem {
       heights[i]        = h;
     }
     geo.attributes.position.needsUpdate = true;
-    geo.computeVertexNormals();
+
+    // World-space normals keep lighting continuous across chunk edges.
+    const normalArr = geo.attributes.normal.array as Float32Array;
+    for (let i = 0; i < vCount; i++) {
+      const wx = posArr[i * 3]     + cx * this.CHUNK;
+      const wz = posArr[i * 3 + 2] + cz * this.CHUNK;
+      const n = this.getTerrainNormalAt(wx, wz);
+      normalArr[i * 3]     = n.x;
+      normalArr[i * 3 + 1] = n.y;
+      normalArr[i * 3 + 2] = n.z;
+    }
+    geo.attributes.normal.needsUpdate = true;
 
     // ── World-space UVs — eliminates chunk seam tiling ────────────────────
     // Map world XZ → UV at a large scale so the texture tiles smoothly
     // across chunk boundaries with no visible grid.
     const uvArr = geo.attributes.uv.array as Float32Array;
-    const UV_SCALE = 1 / 80; // one texture repeat every 80 world units
+    const UV_SCALE = 1 / 22; // fine sand grain; no large repeated patches
     for (let i = 0; i < vCount; i++) {
       const wx = posArr[i * 3]     + cx * this.CHUNK;
       const wz = posArr[i * 3 + 2] + cz * this.CHUNK;
@@ -264,11 +254,13 @@ export class TerrainSystem {
 
     // ── Vertex colours — height-based tinting ─────────────────────────────
     const colors = new Float32Array(vCount * 3);
-    const cTrough = new THREE.Color(0xa86828); // dark hollow
-    const cMid    = new THREE.Color(0xc88840); // mid slope
-    const cCrest  = new THREE.Color(0xf0d090); // bright crest
+    const cTrough = new THREE.Color(0x72502b); // compact shadowed sand
+    const cMid    = new THREE.Color(0x9b6a35); // dry desert brown
+    const cCrest  = new THREE.Color(0xc1904d); // muted sunlit crest
 
     for (let i = 0; i < vCount; i++) {
+      const wx = posArr[i * 3]     + cx * this.CHUNK;
+      const wz = posArr[i * 3 + 2] + cz * this.CHUNK;
       const t = Math.min(heights[i] / this.H_MAX, 1);
       const c = new THREE.Color();
       if (t < 0.45) {
@@ -276,11 +268,12 @@ export class TerrainSystem {
       } else {
         c.lerpColors(cMid, cCrest, (t - 0.45) / 0.55);
       }
-      // Add slight random variation per vertex to break uniformity
-      const jitter = (Math.random() - 0.5) * 0.04;
-      colors[i * 3]     = Math.min(1, c.r + jitter);
-      colors[i * 3 + 1] = Math.min(1, c.g + jitter * 0.8);
-      colors[i * 3 + 2] = Math.min(1, c.b + jitter * 0.5);
+      const broad = this.noise.fbm(wx * 0.0022, wz * 0.0022, 3, 0.55, 2.0) * 0.065;
+      const fine = (this.hash2(wx * 0.8, wz * 0.8) - 0.5) * 0.018;
+      const tint = broad + fine;
+      colors[i * 3]     = THREE.MathUtils.clamp(c.r + tint, 0, 1);
+      colors[i * 3 + 1] = THREE.MathUtils.clamp(c.g + tint * 0.72, 0, 1);
+      colors[i * 3 + 2] = THREE.MathUtils.clamp(c.b + tint * 0.40, 0, 1);
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
@@ -294,7 +287,7 @@ export class TerrainSystem {
   // ── Chunk physics body — Heightfield for accurate collision ───────────────
 
   private buildChunkBody(cx: number, cz: number): Body {
-    const N    = this.RES;
+    const N    = this.RES_NEAR;
     const step = this.CHUNK / N;
 
     const matrix: number[][] = [];
@@ -324,21 +317,45 @@ export class TerrainSystem {
 
   private key(cx: number, cz: number) { return `${cx},${cz}`; }
 
-  private spawnChunk(cx: number, cz: number): void {
+  private getDesiredLod(cx: number, cz: number, px: number, pz: number): 'near' | 'far' {
+    return Math.max(Math.abs(cx - px), Math.abs(cz - pz)) <= this.PHYSICS_R ? 'near' : 'far';
+  }
+
+  private ensureChunk(cx: number, cz: number, lod: 'near' | 'far'): void {
     const k = this.key(cx, cz);
-    if (this.chunks.has(k)) return;
-    const mesh = this.buildChunkMesh(cx, cz);
-    const body = this.buildChunkBody(cx, cz);
-    this.scene.add(mesh);
-    this.world.addBody(body);
-    this.chunks.set(k, { mesh, body, cx, cz });
+    const existing = this.chunks.get(k);
+
+    if (!existing) {
+      const mesh = this.buildChunkMesh(cx, cz, lod === 'near' ? this.RES_NEAR : this.RES_FAR);
+      const body = lod === 'near' ? this.buildChunkBody(cx, cz) : undefined;
+      this.scene.add(mesh);
+      if (body) this.world.addBody(body);
+      this.chunks.set(k, { mesh, body, cx, cz, lod });
+      return;
+    }
+
+    if (existing.lod !== lod) {
+      this.scene.remove(existing.mesh);
+      existing.mesh.geometry.dispose();
+      existing.mesh = this.buildChunkMesh(cx, cz, lod === 'near' ? this.RES_NEAR : this.RES_FAR);
+      existing.lod = lod;
+      this.scene.add(existing.mesh);
+    }
+
+    if (lod === 'near' && !existing.body) {
+      existing.body = this.buildChunkBody(cx, cz);
+      this.world.addBody(existing.body);
+    } else if (lod === 'far' && existing.body) {
+      this.world.removeBody(existing.body);
+      existing.body = undefined;
+    }
   }
 
   private removeChunk(k: string): void {
     const c = this.chunks.get(k);
     if (!c) return;
     this.scene.remove(c.mesh);
-    this.world.removeBody(c.body);
+    if (c.body) this.world.removeBody(c.body);
     c.mesh.geometry.dispose();
     this.chunks.delete(k);
   }
@@ -348,11 +365,11 @@ export class TerrainSystem {
   update(playerPos: THREE.Vector3): void {
     const px = Math.round(playerPos.x / this.CHUNK);
     const pz = Math.round(playerPos.z / this.CHUNK);
-    const R  = this.LOAD_R;
+    const R  = this.VISUAL_R;
 
     for (let x = px - R; x <= px + R; x++)
       for (let z = pz - R; z <= pz + R; z++)
-        this.spawnChunk(x, z);
+        this.ensureChunk(x, z, this.getDesiredLod(x, z, px, pz));
 
     this.chunks.forEach((_, k) => {
       const [cx, cz] = k.split(',').map(Number);

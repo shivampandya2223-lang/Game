@@ -125,37 +125,32 @@ export class GameEngine {
   // ── Per-frame tick ────────────────────────────────────────────────────────
 
   private tick(dt: number): void {
-    const vs = this.vehicle.getState();
+    const beforeVehicle = this.vehicle.getState();
 
     // Physics step
     this.world.step(1 / 60, dt, 3);
 
     // Terrain height under car
-    const th = this.terrain.getTerrainHeightAt(vs.position.x, vs.position.z);
+    const th = this.terrain.getTerrainHeightAt(beforeVehicle.position.x, beforeVehicle.position.z);
 
     // Systems update
-    this.vehicle.update(dt, th);
+    this.vehicle.update(dt, th, (x, z) => this.terrain.getTerrainHeightAt(x, z));
+    const vs = this.vehicle.getState();
     this.terrain.update(vs.position);
     this.environment.update(
       vs.position,
       (x, z) => this.terrain.getTerrainHeightAt(x, z)
     );
-    this.lighting.update(dt);
+    this.lighting.update(dt, vs.speed, vs.position);
+    this.vehicle.setHeadlightPower(this.lighting.getNightFactor());
     this.cameraSystem.update(vs.position, vs.rotation.y, vs.speed);
     this.particles.update(dt);
 
     // ── Dust cloud ────────────────────────────────────────────────────────
     this.dustTimer += dt;
-    if (vs.speed > 10 && this.dustTimer > 0.06) {
-      const dustPos = vs.position.clone().add(
-        new THREE.Vector3(
-          Math.sin(vs.rotation.y) * 2,
-          0.25,
-          Math.cos(vs.rotation.y) * 2
-        )
-      );
-      const dustCount = Math.floor(Math.min(vs.speed / 25, 7));
-      this.particles.emitDust(dustPos, vs.velocity, dustCount);
+    if (vs.speed > 12 && this.dustTimer > 0.045) {
+      const dustCount = Math.floor(1 + Math.min(vs.speed / 45, 4));
+      this.particles.emitDust(vs.position, vs.velocity, vs.rotation.y, vs.speed, dustCount);
       this.dustTimer = 0;
     }
 

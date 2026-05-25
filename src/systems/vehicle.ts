@@ -6,7 +6,7 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { Body, World, Sphere, Vec3 } from 'cannon-es';
+import { Body, World, Sphere } from 'cannon-es';
 
 export interface VehicleState {
   position: THREE.Vector3;
@@ -22,6 +22,15 @@ export class VehicleSystem {
   private carBody: Body;
   private carMesh: THREE.Group;
   private isModelLoaded = false;
+  private position = new THREE.Vector3(9, 0, 14);
+  private velocity = new THREE.Vector3();
+  private visualY = 0;
+  private visualPitch = 0;
+  private visualRoll = 0;
+  private hasRideInitialized = false;
+  private headlightRig: THREE.Group;
+  private headlights: THREE.SpotLight[] = [];
+  private headlightGlowMats: THREE.MeshBasicMaterial[] = [];
 
   // Wheel nodes found in the GLB
   private wheels     : THREE.Object3D[] = [];
@@ -29,17 +38,22 @@ export class VehicleSystem {
   private wheelRotation = 0;
 
   // Driving state
-  private acceleration = 0;
   private steering     = 0;
   private yaw          = 0;
+  private speed        = 0;
 
   // Tuning
   private readonly MAX_SPEED      = 180;   // km/h
-  private readonly ACCEL_FORCE    = 280;
-  private readonly DECEL_FORCE    = 70;
+  private readonly MAX_REVERSE    = 42;    // km/h
+  private readonly ACCEL_RATE     = 24;    // m/s^2
+  private readonly BRAKE_RATE     = 34;    // m/s^2
+  private readonly COAST_DRAG     = 7.5;   // m/s^2
   private readonly STEERING_SPEED = 2.8;
   private readonly STEERING_MAX   = 0.52;
-  private readonly DRIFT_FACTOR   = 0.87;
+  private readonly COLLIDER_RADIUS = 1.3;
+  private readonly GROUND_CLEARANCE = 0.0;
+  private readonly WHEEL_BASE = 2.35;
+  private readonly TRACK_WIDTH = 1.7;
 
   // Keys
   private keys: Record<string, boolean> = {};
@@ -49,15 +63,19 @@ export class VehicleSystem {
     this.world = world;
 
     this.carBody = new Body({
-      mass          : 1,
-      shape         : new Sphere(1.3),
+      mass          : 0,
+      shape         : new Sphere(this.COLLIDER_RADIUS),
       linearDamping : 0.30,
       angularDamping: 0.99,
     });
-    this.carBody.position.set(0, 10, 0);
+    this.carBody.collisionResponse = false;
+    this.carBody.position.set(this.position.x, this.COLLIDER_RADIUS, this.position.z);
     world.addBody(this.carBody);
 
     this.carMesh = this.buildPlaceholder();
+    this.carMesh.position.copy(this.position);
+    this.headlightRig = this.buildHeadlights();
+    this.carMesh.add(this.headlightRig);
     scene.add(this.carMesh);
 
     this.loadGLB();
@@ -136,20 +154,12 @@ export class VehicleSystem {
 
         const model = gltf.scene;
 
-        // Scale to ~4 units wide
+        // Scale to ~4 units long after final orientation.
         const box  = new THREE.Box3().setFromObject(model);
         const size = new THREE.Vector3();
         box.getSize(size);
         const scale = 4.0 / Math.max(size.x, size.y, size.z);
         model.scale.setScalar(scale);
-
-        // Re-measure after scale
-        box.setFromObject(model);
-        const centre = new THREE.Vector3();
-        box.getCenter(centre);
-
-        // Centre XZ, sit on ground
-        model.position.set(-centre.x, -box.min.y, -centre.z);
 
         // ── Determine which way the model faces ──────────────────────────
         // We need the front of the car to face -Z (our forward direction).
@@ -158,11 +168,15 @@ export class VehicleSystem {
         const needsRotation = size.x > size.z * 1.1;
         if (needsRotation) {
           model.rotation.y = Math.PI / 2;
-          // Re-centre after rotation
-          box.setFromObject(model);
-          box.getCenter(centre);
-          model.position.set(-centre.x, -box.min.y, -centre.z);
         }
+
+        // Centre XZ and put the final rotated/scaled model exactly on y=0.
+        model.position.set(0, 0, 0);
+        model.updateMatrixWorld(true);
+        box.setFromObject(model);
+        const centre = new THREE.Vector3();
+        box.getCenter(centre);
+        model.position.set(-centre.x, -box.min.y, -centre.z);
 
         // Shadows & wheel harvest
         model.traverse((child) => {
@@ -189,6 +203,9 @@ export class VehicleSystem {
 
         this.carMesh = new THREE.Group();
         this.carMesh.add(model);
+        this.carMesh.add(this.headlightRig);
+        this.carMesh.position.copy(this.position);
+        this.carMesh.rotation.set(this.visualPitch, this.yaw, this.visualRoll, 'YXZ');
         this.scene.add(this.carMesh);
         this.isModelLoaded = true;
         console.log('✅ Buggy.glb loaded — wheels:', this.wheels.length,
@@ -201,6 +218,48 @@ export class VehicleSystem {
         this.isModelLoaded = true;
       }
     );
+  }
+
+  private buildHeadlights(): THREE.Group {
+    const rig = new THREE.Group();
+    const lampMat = new THREE.MeshBasicMaterial({
+      color      : 0xffe2a0,
+      transparent: true,
+      opacity    : 0,
+      depthWrite : false,
+    });
+
+    const lampPositions: [number, number, number][] = [
+      [-0.38, 0.58, 1.92],
+      [ 0.38, 0.58, 1.92],
+    ];
+
+    lampPositions.forEach(([x, y, z]) => {
+      const light = new THREE.SpotLight(0xffdca0, 0, 78, 0.34, 0.62, 1.25);
+      light.position.set(x, y, z);
+      light.castShadow = false;
+      light.target.position.set(x, 0.18, 15);
+      rig.add(light, light.target);
+      this.headlights.push(light);
+
+      const glow = new THREE.Mesh(new THREE.SphereGeometry(0.105, 12, 8), lampMat.clone());
+      glow.position.set(x, y, z + 0.04);
+      rig.add(glow);
+      this.headlightGlowMats.push(glow.material as THREE.MeshBasicMaterial);
+    });
+
+    return rig;
+  }
+
+  setHeadlightPower(nightFactor: number): void {
+    const power = THREE.MathUtils.smoothstep(THREE.MathUtils.clamp(nightFactor, 0, 1), 0, 1);
+    this.headlights.forEach((light) => {
+      light.intensity = power * 18;
+      light.distance = 58 + power * 22;
+    });
+    this.headlightGlowMats.forEach((mat) => {
+      mat.opacity = power * 0.95;
+    });
   }
 
   // ── Input ─────────────────────────────────────────────────────────────────
@@ -218,21 +277,87 @@ export class VehicleSystem {
 
   // ── Per-frame update ──────────────────────────────────────────────────────
 
-  update(dt: number, terrainHeight: number): void {
+  private approach(current: number, target: number, step: number): number {
+    if (current < target) return Math.min(current + step, target);
+    if (current > target) return Math.max(current - step, target);
+    return target;
+  }
+
+  private sampleRide(
+    getTerrainHeightAt: (x: number, z: number) => number
+  ): { height: number; pitch: number; roll: number } {
+    const sinY = Math.sin(this.yaw);
+    const cosY = Math.cos(this.yaw);
+    const rightX = cosY;
+    const rightZ = -sinY;
+    const halfBase = this.WHEEL_BASE * 0.5;
+    const halfTrack = this.TRACK_WIDTH * 0.5;
+
+    const frontLeftH = getTerrainHeightAt(
+      this.position.x + sinY * halfBase - rightX * halfTrack,
+      this.position.z + cosY * halfBase - rightZ * halfTrack
+    );
+    const frontRightH = getTerrainHeightAt(
+      this.position.x + sinY * halfBase + rightX * halfTrack,
+      this.position.z + cosY * halfBase + rightZ * halfTrack
+    );
+    const rearLeftH = getTerrainHeightAt(
+      this.position.x - sinY * halfBase - rightX * halfTrack,
+      this.position.z - cosY * halfBase - rightZ * halfTrack
+    );
+    const rearRightH = getTerrainHeightAt(
+      this.position.x - sinY * halfBase + rightX * halfTrack,
+      this.position.z - cosY * halfBase + rightZ * halfTrack
+    );
+    const centerH = getTerrainHeightAt(this.position.x, this.position.z);
+
+    const frontH = (frontLeftH + frontRightH) * 0.5;
+    const rearH = (rearLeftH + rearRightH) * 0.5;
+    const leftH = (frontLeftH + rearLeftH) * 0.5;
+    const rightH = (frontRightH + rearRightH) * 0.5;
+    const heights = [frontLeftH, frontRightH, rearLeftH, rearRightH];
+    const pitch = THREE.MathUtils.clamp(Math.atan2(rearH - frontH, this.WHEEL_BASE), -0.38, 0.38);
+    const roll = THREE.MathUtils.clamp(Math.atan2(leftH - rightH, this.TRACK_WIDTH), -0.34, 0.34);
+    const contactPoints = [
+      new THREE.Vector3(-halfTrack, 0, halfBase),
+      new THREE.Vector3( halfTrack, 0, halfBase),
+      new THREE.Vector3(-halfTrack, 0, -halfBase),
+      new THREE.Vector3( halfTrack, 0, -halfBase),
+    ];
+    const contactEuler = new THREE.Euler(pitch, 0, roll, 'YXZ');
+    const fittedHeight = contactPoints.reduce((sum, point, index) => {
+      return sum + heights[index] - point.applyEuler(contactEuler).y;
+    }, 0) / contactPoints.length;
+
+    return {
+      height: Math.max(fittedHeight, centerH - 0.12) + this.GROUND_CLEARANCE,
+      pitch,
+      roll,
+    };
+  }
+
+  update(
+    dt: number,
+    terrainHeight: number,
+    getTerrainHeightAt?: (x: number, z: number) => number
+  ): void {
     const fwd  = this.keys['w'] || this.keys['arrowup'];
     const back = this.keys['s'] || this.keys['arrowdown'];
     const left = this.keys['a'] || this.keys['arrowleft'];
     const rght = this.keys['d'] || this.keys['arrowright'];
     const hand = this.keys[' '];
 
-    // ── Acceleration ──────────────────────────────────────────────────────
-    if (fwd) {
-      this.acceleration = Math.min(this.acceleration + this.ACCEL_FORCE * dt, 1);
-    } else if (back) {
-      this.acceleration = Math.max(this.acceleration - this.ACCEL_FORCE * dt * 0.6, -0.35);
+    const maxForward = this.MAX_SPEED / 3.6;
+    const maxReverse = -this.MAX_REVERSE / 3.6;
+
+    // ── Speed ─────────────────────────────────────────────────────────────
+    if (fwd && !back) {
+      this.speed = this.approach(this.speed, maxForward, this.ACCEL_RATE * dt);
+    } else if (back && !fwd) {
+      const rate = this.speed > 1 ? this.BRAKE_RATE : this.ACCEL_RATE * 0.55;
+      this.speed = this.approach(this.speed, maxReverse, rate * dt);
     } else {
-      this.acceleration *= (1 - this.DECEL_FORCE * dt * 0.05);
-      if (Math.abs(this.acceleration) < 0.002) this.acceleration = 0;
+      this.speed = this.approach(this.speed, 0, this.COAST_DRAG * dt);
     }
 
     // ── Steering ──────────────────────────────────────────────────────────
@@ -245,48 +370,55 @@ export class VehicleSystem {
       if (Math.abs(this.steering) < 0.001) this.steering = 0;
     }
 
-    // ── Yaw ───────────────────────────────────────────────────────────────
-    const vel   = this.carBody.velocity as unknown as THREE.Vector3;
-    const speed = Math.sqrt(vel.x ** 2 + vel.z ** 2); // m/s
-
-    if (speed > 0.5 && Math.abs(this.acceleration) > 0.01) {
-      const driftMult = hand ? 2.2 : 1.0;
-      const turnRate  = this.steering * Math.min(speed, 30) * 0.015 * driftMult;
-      this.yaw += turnRate;
+    // ── Steering / yaw ────────────────────────────────────────────────────
+    const absSpeed = Math.abs(this.speed);
+    if (absSpeed > 0.15) {
+      const speedFactor = THREE.MathUtils.clamp(absSpeed / 24, 0.2, 1.0);
+      const reverseSign = this.speed >= 0 ? 1 : -1;
+      const driftMult = hand ? 1.65 : 1.0;
+      this.yaw += this.steering * speedFactor * driftMult * reverseSign * dt * 1.85;
     }
 
-    // ── Velocity in yaw direction ─────────────────────────────────────────
-    const sinY        = Math.sin(this.yaw);
-    const cosY        = Math.cos(this.yaw);
-    const targetSpeed = this.acceleration * (this.MAX_SPEED / 3.6);
+    // ── Integrate across the desert ───────────────────────────────────────
+    const sinY = Math.sin(this.yaw);
+    const cosY = Math.cos(this.yaw);
+    const prevX = this.position.x;
+    const prevZ = this.position.z;
+    this.position.x += sinY * this.speed * dt;
+    this.position.z += cosY * this.speed * dt;
 
-    const df   = hand ? this.DRIFT_FACTOR * 0.72 : this.DRIFT_FACTOR;
-    const tVx  = targetSpeed * sinY * 0.13 + vel.x * (1 - 0.13);
-    const tVz  = targetSpeed * cosY * 0.13 + vel.z * (1 - 0.13);
+    const ride = getTerrainHeightAt
+      ? this.sampleRide(getTerrainHeightAt)
+      : { height: terrainHeight + this.GROUND_CLEARANCE, pitch: 0, roll: 0 };
 
-    const fwdVel     = tVx * sinY + tVz * cosY;
-    const sideVel    = tVx * cosY - tVz * sinY;
-    const dampedSide = sideVel * df;
+    if (!this.hasRideInitialized) {
+      this.visualY = ride.height;
+      this.visualPitch = ride.pitch;
+      this.visualRoll = ride.roll;
+      this.hasRideInitialized = true;
+    } else {
+      const heightT = 1 - Math.exp(-dt * 22);
+      const leanT = 1 - Math.exp(-dt * 10);
+      this.visualY += (ride.height - this.visualY) * heightT;
+      this.visualPitch += (ride.pitch - this.visualPitch) * leanT;
+      this.visualRoll  += (ride.roll - this.visualRoll) * leanT;
+    }
+    this.position.y = this.visualY;
 
-    this.carBody.velocity = new Vec3(
-      fwdVel * sinY + dampedSide * cosY,
-      vel.y,
-      fwdVel * cosY - dampedSide * sinY
+    this.velocity.set(
+      (this.position.x - prevX) / Math.max(dt, 0.0001),
+      0,
+      (this.position.z - prevZ) / Math.max(dt, 0.0001)
     );
 
-    // ── Floor clamp ───────────────────────────────────────────────────────
-    const minY = terrainHeight + 0.9;
-    if (this.carBody.position.y < minY) {
-      (this.carBody.position as unknown as THREE.Vector3).y = minY;
-      if (this.carBody.velocity.y < 0) this.carBody.velocity.y = 0;
-    }
-
     // ── Sync mesh ─────────────────────────────────────────────────────────
-    this.carMesh.position.copy(this.carBody.position as unknown as THREE.Vector3);
-    this.carMesh.rotation.set(0, this.yaw, 0);
+    this.carMesh.position.copy(this.position);
+    this.carMesh.rotation.set(this.visualPitch, this.yaw, this.visualRoll, 'YXZ');
+    this.carBody.position.set(this.position.x, this.position.y + this.COLLIDER_RADIUS, this.position.z);
+    this.carBody.velocity.set(this.velocity.x, 0, this.velocity.z);
 
     // ── Wheels ────────────────────────────────────────────────────────────
-    this.wheelRotation += speed * dt / 0.52;
+    this.wheelRotation += this.speed * dt / 0.52;
     this.wheels.forEach(w => (w.rotation.x = this.wheelRotation));
     this.frontWheels.forEach(w => (w.rotation.y = this.steering * 0.85));
   }
@@ -294,12 +426,11 @@ export class VehicleSystem {
   // ── Accessors ─────────────────────────────────────────────────────────────
 
   getState(): VehicleState {
-    const vel   = this.carBody.velocity as unknown as THREE.Vector3;
-    const speed = Math.sqrt(vel.x ** 2 + vel.z ** 2) * 3.6;
+    const speed = Math.abs(this.speed) * 3.6;
     return {
-      position : new THREE.Vector3().copy(this.carBody.position as unknown as THREE.Vector3),
+      position : this.position.clone(),
       rotation : new THREE.Euler(0, this.yaw, 0),
-      velocity : new THREE.Vector3(vel.x, vel.y, vel.z),
+      velocity : this.velocity.clone(),
       speed,
       isLoaded : this.isModelLoaded,
     };

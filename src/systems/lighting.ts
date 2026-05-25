@@ -12,6 +12,7 @@ export interface LightingState {
   skyColor        : THREE.Color;
   ambientIntensity: number;
   period          : string;
+  nightFactor     : number;
 }
 
 interface ColorStop {
@@ -26,6 +27,7 @@ interface ColorStop {
 export class LightingSystem {
   private scene  : THREE.Scene;
   private sun    : THREE.DirectionalLight;
+  private moonLight: THREE.DirectionalLight;
   private ambient: THREE.AmbientLight;
   private hemi   : THREE.HemisphereLight;
   private fog    : THREE.Fog;
@@ -35,34 +37,25 @@ export class LightingSystem {
   private sunDisc    : THREE.Mesh;
   private moonDisc   : THREE.Mesh;
   private starField  : THREE.Points;
+  private focus      = new THREE.Vector3();
 
-  private timeOfDay        = 14;
-  private readonly TIME_SPEED = 0.003;
+  private timeOfDay = 15.2;
+  private readonly IDLE_DAY_SECONDS = 1080; // 18 minutes if the player waits.
+  private readonly DRIVE_DAY_SECONDS = 420; // 7 minutes while driving.
 
   private readonly STOPS: ColorStop[] = [
-    // Midnight — deep indigo sky
-    { time:  0, skyTop: new THREE.Color(0x03030e), skyHor: new THREE.Color(0x0c0a22), fog: new THREE.Color(0x080618), sun: new THREE.Color(0x5050a0), ambient: 0.05 },
-    // Pre-dawn — dark warm horizon
-    { time:  4, skyTop: new THREE.Color(0x06040f), skyHor: new THREE.Color(0x1e0e06), fog: new THREE.Color(0x160a04), sun: new THREE.Color(0x7050a0), ambient: 0.07 },
-    // Sunrise glow — orange/red horizon, dark blue zenith
-    { time:  5, skyTop: new THREE.Color(0x0e1840), skyHor: new THREE.Color(0xff4a0a), fog: new THREE.Color(0xff6828), sun: new THREE.Color(0xff8830), ambient: 0.20 },
-    // Early morning — warm horizon, blue sky emerging
-    { time:  6, skyTop: new THREE.Color(0x1a3a80), skyHor: new THREE.Color(0xff7820), fog: new THREE.Color(0xffa040), sun: new THREE.Color(0xffcc70), ambient: 0.35 },
-    // Morning — clear blue sky, sandy fog
-    { time:  8, skyTop: new THREE.Color(0x1255b0), skyHor: new THREE.Color(0x6ab0e0), fog: new THREE.Color(0xd8b878), sun: new THREE.Color(0xfff0c0), ambient: 0.55 },
-    // Noon — deep azure zenith, pale horizon
-    { time: 12, skyTop: new THREE.Color(0x0840b8), skyHor: new THREE.Color(0x5898d8), fog: new THREE.Color(0xc8a860), sun: new THREE.Color(0xffffff), ambient: 0.72 },
-    // Afternoon — slightly warmer
-    { time: 15, skyTop: new THREE.Color(0x0e4ec0), skyHor: new THREE.Color(0x68a8dc), fog: new THREE.Color(0xc09858), sun: new THREE.Color(0xffe888), ambient: 0.65 },
-    // Late afternoon — golden hour begins
-    { time: 17, skyTop: new THREE.Color(0x1a2870), skyHor: new THREE.Color(0xff7818), fog: new THREE.Color(0xff9838), sun: new THREE.Color(0xff9820), ambient: 0.45 },
-    // Sunset — fiery orange/red horizon, purple zenith
-    { time: 18, skyTop: new THREE.Color(0x200838), skyHor: new THREE.Color(0xff3808), fog: new THREE.Color(0xff5818), sun: new THREE.Color(0xff5010), ambient: 0.30 },
-    // Dusk — deep purple, fading orange
-    { time: 19, skyTop: new THREE.Color(0x0a0420), skyHor: new THREE.Color(0x3a1206), fog: new THREE.Color(0x2a0e04), sun: new THREE.Color(0xff3808), ambient: 0.14 },
-    // Night — back to deep indigo
-    { time: 21, skyTop: new THREE.Color(0x03030e), skyHor: new THREE.Color(0x0a0618), fog: new THREE.Color(0x060412), sun: new THREE.Color(0x5050a0), ambient: 0.06 },
-    { time: 24, skyTop: new THREE.Color(0x03030e), skyHor: new THREE.Color(0x0c0a22), fog: new THREE.Color(0x080618), sun: new THREE.Color(0x5050a0), ambient: 0.05 },
+    { time:  0, skyTop: new THREE.Color(0x030712), skyHor: new THREE.Color(0x08101f), fog: new THREE.Color(0x060a12), sun: new THREE.Color(0x9eb8ff), ambient: 0.08 },
+    { time:  4, skyTop: new THREE.Color(0x050916), skyHor: new THREE.Color(0x20150f), fog: new THREE.Color(0x120d0b), sun: new THREE.Color(0xb8a2ff), ambient: 0.10 },
+    { time:  5, skyTop: new THREE.Color(0x13254a), skyHor: new THREE.Color(0xc66f35), fog: new THREE.Color(0x8f6038), sun: new THREE.Color(0xf0a15a), ambient: 0.24 },
+    { time:  6, skyTop: new THREE.Color(0x2f5f93), skyHor: new THREE.Color(0xd7a15a), fog: new THREE.Color(0xb68a56), sun: new THREE.Color(0xffd28a), ambient: 0.38 },
+    { time:  8, skyTop: new THREE.Color(0x3f83c4), skyHor: new THREE.Color(0x9fc4db), fog: new THREE.Color(0xc0a476), sun: new THREE.Color(0xffedc0), ambient: 0.58 },
+    { time: 12, skyTop: new THREE.Color(0x2d72bf), skyHor: new THREE.Color(0xa8cfe6), fog: new THREE.Color(0xcab48a), sun: new THREE.Color(0xffffff), ambient: 0.76 },
+    { time: 15, skyTop: new THREE.Color(0x4f8bc5), skyHor: new THREE.Color(0xb5cbd8), fog: new THREE.Color(0xb99a68), sun: new THREE.Color(0xffe5a6), ambient: 0.64 },
+    { time: 17, skyTop: new THREE.Color(0x40537e), skyHor: new THREE.Color(0xc88444), fog: new THREE.Color(0x9e7044), sun: new THREE.Color(0xffb064), ambient: 0.42 },
+    { time: 18, skyTop: new THREE.Color(0x251c35), skyHor: new THREE.Color(0xb65b2d), fog: new THREE.Color(0x6e442d), sun: new THREE.Color(0xff7a38), ambient: 0.26 },
+    { time: 19, skyTop: new THREE.Color(0x0b1024), skyHor: new THREE.Color(0x2f211d), fog: new THREE.Color(0x17100f), sun: new THREE.Color(0x8098d8), ambient: 0.13 },
+    { time: 21, skyTop: new THREE.Color(0x030712), skyHor: new THREE.Color(0x08101f), fog: new THREE.Color(0x060a12), sun: new THREE.Color(0x9eb8ff), ambient: 0.08 },
+    { time: 24, skyTop: new THREE.Color(0x030712), skyHor: new THREE.Color(0x08101f), fog: new THREE.Color(0x060a12), sun: new THREE.Color(0x9eb8ff), ambient: 0.08 },
   ];
 
   constructor(scene: THREE.Scene) {
@@ -81,6 +74,11 @@ export class LightingSystem {
     this.sun.shadow.normalBias    = 0.015;
     scene.add(this.sun);
     scene.add(this.sun.target);
+
+    this.moonLight = new THREE.DirectionalLight(0xbfd2ff, 0.0);
+    this.moonLight.castShadow = false;
+    scene.add(this.moonLight);
+    scene.add(this.moonLight.target);
 
     // ── Hemisphere fill ───────────────────────────────────────────────────
     this.hemi = new THREE.HemisphereLight(0x87ceeb, 0xd4a060, 0.7);
@@ -113,7 +111,7 @@ export class LightingSystem {
     scene.add(this.starField);
 
     // ── Fog ───────────────────────────────────────────────────────────────
-    this.fog = new THREE.Fog(0xd4a96a, 180, 1000);
+    this.fog = new THREE.Fog(0xd4a96a, 160, 1050);
     scene.fog = this.fog;
 
     this.applyTime();
@@ -256,10 +254,32 @@ export class LightingSystem {
   }
 
   private sunIntensity(t: number): number {
-    if (t >= 6  && t <= 18) return Math.max(0.15, Math.sin(((t - 6) / 12) * Math.PI) * 2.4);
-    if (t > 18  && t < 20)  return (20 - t) * 0.12;
-    if (t > 4   && t < 6)   return (t - 4)  * 0.12;
-    return 0.05;
+    if (t >= 5.5 && t <= 18.5) {
+      const p = THREE.MathUtils.clamp((t - 5.5) / 13, 0, 1);
+      return Math.max(0.08, Math.sin(p * Math.PI) * 2.35);
+    }
+    return 0;
+  }
+
+  private moonIntensity(t: number): number {
+    if (t >= 19 || t <= 5) return 0.38;
+    if (t > 5 && t < 6) return (6 - t) * 0.38;
+    if (t > 18 && t < 19) return (t - 18) * 0.38;
+    return 0;
+  }
+
+  getNightFactor(): number {
+    const t = this.timeOfDay;
+    if (t >= 19 || t <= 5) return 1;
+    if (t > 18 && t < 19) return t - 18;
+    if (t > 5 && t < 6) return 6 - t;
+    return 0;
+  }
+
+  private cycleSpeed(speedKmh: number): number {
+    const drive = THREE.MathUtils.clamp(speedKmh / 80, 0, 1);
+    const daySeconds = THREE.MathUtils.lerp(this.IDLE_DAY_SECONDS, this.DRIVE_DAY_SECONDS, drive);
+    return 24 / daySeconds;
   }
 
   // ── Apply ─────────────────────────────────────────────────────────────────
@@ -268,22 +288,32 @@ export class LightingSystem {
     const t   = this.timeOfDay;
     const c   = this.interp(t);
     const si  = this.sunIntensity(t);
+    const mi  = this.moonIntensity(t);
     const sp  = this.sunPosition(t);
     const mp  = this.moonPosition(t);
 
+    this.skyDome.position.copy(this.focus);
+    this.starField.position.copy(this.focus);
+    this.sun.target.position.copy(this.focus);
+    this.moonLight.target.position.copy(this.focus);
+
     // Sun light
-    this.sun.position.copy(sp);
+    this.sun.position.copy(this.focus).add(sp);
     this.sun.color.copy(c.sun);
     this.sun.intensity  = si;
     this.sun.castShadow = si > 0.15;
 
+    this.moonLight.position.copy(this.focus).add(mp);
+    this.moonLight.color.set(0xbfd2ff);
+    this.moonLight.intensity = mi;
+
     // Ambient
-    this.ambient.color.copy(c.sun);
+    this.ambient.color.copy(t < 5 || t > 19 ? new THREE.Color(0xaec6ff) : c.sun);
     this.ambient.intensity = c.ambient;
 
     // Hemisphere
     this.hemi.color.copy(c.skyHor);
-    this.hemi.groundColor.set(0xc89050);
+    this.hemi.groundColor.set(t < 5 || t > 19 ? 0x2c3550 : 0xb08050);
     this.hemi.intensity = c.ambient * 0.9;
 
     // Sky gradient
@@ -294,7 +324,7 @@ export class LightingSystem {
     this.fog.color.copy(c.fog);
 
     // Sun disc position & visibility
-    this.sunDisc.position.copy(sp.clone().normalize().multiplyScalar(880));
+    this.sunDisc.position.copy(this.focus).add(sp.clone().normalize().multiplyScalar(880));
     const sunVis = Math.max(0, si / 2.4);
     (this.sunDisc.material as THREE.MeshBasicMaterial).opacity = sunVis;
     (this.sunDisc.material as THREE.MeshBasicMaterial).transparent = true;
@@ -309,26 +339,27 @@ export class LightingSystem {
     (this.sunDisc.material as THREE.MeshBasicMaterial).color.copy(discColor);
 
     // Moon
-    this.moonDisc.position.copy(mp.clone().normalize().multiplyScalar(880));
-    const moonVis = t < 5 || t > 19 ? 0.85 : 0;
+    this.moonDisc.position.copy(this.focus).add(mp.clone().normalize().multiplyScalar(880));
+    const moonVis = THREE.MathUtils.clamp(mi / 0.38, 0, 1) * 0.9;
     (this.moonDisc.material as THREE.MeshBasicMaterial).opacity = moonVis;
     (this.moonDisc.material as THREE.MeshBasicMaterial).transparent = true;
 
     // Stars — visible at night
-    const starOpacity = t < 5 || t > 19
-      ? 0.9
+    const starOpacity = t < 5 || t > 20
+      ? 0.95
       : t < 6
-        ? (6 - t) * 0.9
+        ? (6 - t) * 0.95
         : t > 18
-          ? (t - 18) * 0.9
+          ? THREE.MathUtils.clamp((t - 18) / 2, 0, 1) * 0.95
           : 0;
     (this.starField.material as THREE.PointsMaterial).opacity = starOpacity;
   }
 
   // ── Update ────────────────────────────────────────────────────────────────
 
-  update(dt: number): void {
-    this.timeOfDay = (this.timeOfDay + dt * this.TIME_SPEED) % 24;
+  update(dt: number, speedKmh = 0, focus?: THREE.Vector3): void {
+    if (focus) this.focus.copy(focus);
+    this.timeOfDay = (this.timeOfDay + dt * this.cycleSpeed(speedKmh)) % 24;
     this.applyTime();
   }
 
@@ -349,11 +380,12 @@ export class LightingSystem {
       skyColor        : this.interp(t).skyTop,
       ambientIntensity: this.ambient.intensity,
       period,
+      nightFactor     : this.getNightFactor(),
     };
   }
 
   dispose(): void {
-    this.scene.remove(this.sun, this.hemi, this.ambient,
+    this.scene.remove(this.sun, this.moonLight, this.hemi, this.ambient,
                       this.skyDome, this.sunDisc, this.moonDisc, this.starField);
     this.skyDome.geometry.dispose();
     (this.skyDome.material as THREE.Material).dispose();
